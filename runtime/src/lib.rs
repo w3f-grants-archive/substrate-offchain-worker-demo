@@ -298,9 +298,10 @@ impl pallet_example_offchain_worker::Config for Runtime {
 	type AuthorityId = pallet_example_offchain_worker::crypto::TestAuthId;
 	type Call = Call;
 	type Event = Event;
-	type GracePeriod = GracePeriod;
-	type UnsignedInterval = UnsignedInterval;
-	type UnsignedPriority = UnsignedPriority;
+	// TODO interstellar
+	// type GracePeriod = GracePeriod;
+	// type UnsignedInterval = UnsignedInterval;
+	// type UnsignedPriority = UnsignedPriority;
 }
 
 impl<LocalCall> frame_system::offchain::CreateSignedTransaction<LocalCall> for Runtime

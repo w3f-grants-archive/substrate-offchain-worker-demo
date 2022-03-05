@@ -8,6 +8,7 @@ homepage = "https://substrate.io"
 repository = "https://github.com/paritytech/substrate/"
 description = "FRAME example pallet for offchain worker"
 readme = "README.md"
+build = "build.rs"
 
 [package.metadata.docs.rs]
 targets = ["x86_64-unknown-linux-gnu"]
@@ -17,6 +18,10 @@ codec = { package = "parity-scale-codec", version = "2.0.0", default-features = 
 lite-json = { version = "0.1", default-features = false }
 log = { version = "0.4.14", default-features = false }
 scale-info = { version = "1.0", default-features = false, features = ["derive"] }
+serde = { version = '1.0.130', default-features = false, features = ['derive'] }
+serde_json = { version = '1.0.67', default-features = false, features = ['alloc'] }
+base64 = { default-features = false, features = ["alloc"], version = "0.13" }
+bytes = { version = "1.1.0", default-features = false }
 
 # Substrate packages
 
@@ -27,6 +32,17 @@ sp-io = { version = "4.0.0-dev", default-features = false, git = 'https://github
 sp-keystore = { version = "0.10.0-dev", git = 'https://github.com/paritytech/substrate.git', tag = 'monthly-2021-10', optional = true }
 sp-runtime = { version = "4.0.0-dev", default-features = false, git = 'https://github.com/paritytech/substrate.git', tag = 'monthly-2021-10' }
 sp-std = { version = "4.0.0-dev", default-features = false, git = 'https://github.com/paritytech/substrate.git', tag = 'monthly-2021-10' }
+
+# https://github.com/tokio-rs/prost#using-prost-in-a-no_std-crate
+prost = { version = "0.9", default-features = false, features = ["prost-derive"] }
+# "Only necessary if using Protobuf well-known types:"
+prost-types = { version = "0.9", default-features = false }
+
+# prost: could not find a way to use encode() in no_std context...
+# = note: the lang item is first defined in crate `std` (which `byteorder` depends on)
+# = note: first definition in `std` loaded from /home/pratn/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/wasm32-unknown-unknown/lib/libstd-d9a8e4ca4a56d589.rlib
+# quick-protobuf = { version = "0.8.0", default-features = false }
+# quick-protobuf = "0.8.0"
 
 [features]
 default = ["std"]
@@ -44,3 +60,9 @@ std = [
 	"sp-std/std",
 ]
 try-runtime = ["frame-support/try-runtime"]
+
+[build-dependencies]
+prost-build = "0.9.0"
+
+# pb-rs = "0.9.1"
+# walkdir = "2.3.2"

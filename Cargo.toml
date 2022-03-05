@@ -7,3 +7,7 @@ members = [
   'pallets/*',
   'runtime',
 ]
+
+# [package]
+# name = "fakeroot"
+# version = "0.0.1"
