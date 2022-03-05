@@ -1,10 +1,45 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
+use bytes::Buf;
+use bytes::BufMut;
+// use codec::{Decode, Encode};
+use frame_support::traits::Get;
+use frame_system::{
+    self as system,
+    offchain::{
+        AppCrypto, CreateSignedTransaction, SendSignedTransaction, SendUnsignedTransaction,
+        SignedPayload, Signer, SigningTypes, SubmitTransaction,
+    },
+};
+use sp_core::{crypto::KeyTypeId, hexdisplay::AsBytesRef};
+use sp_runtime::{
+    offchain::{
+        http,
+        storage::{MutateStorageError, StorageRetrievalError, StorageValueRef},
+        Duration,
+    },
+    traits::Zero,
+    transaction_validity::{InvalidTransaction, TransactionValidity, ValidTransaction},
+    RuntimeDebug,
+};
+use sp_std::borrow::ToOwned;
+use sp_std::vec;
+use sp_std::vec::Vec;
+
+use prost::Message;
+
+mod interstellarpbapigarble {
+    // include_bytes!(concat!(env!("OUT_DIR")), "/interstellarpbapigarble.rs");
+    // include_bytes!(concat!(env!("OUT_DIR"), "/interstellarpbapigarble.rs"));
+    include!(concat!(env!("OUT_DIR"), "/interstellarpbapigarble.rs"));
+}
+
 pub use pallet::*;
 
 #[frame_support::pallet]
 pub mod pallet {
     //! A demonstration of an offchain worker that sends onchain callbacks
+    use codec::{Decode, Encode};
     use core::convert::TryInto;
     use frame_support::pallet_prelude::*;
     use frame_system::{
@@ -14,7 +49,6 @@ pub mod pallet {
         },
         pallet_prelude::*,
     };
-    use parity_scale_codec::{Decode, Encode};
     use sp_core::crypto::KeyTypeId;
     use sp_runtime::{
         offchain::{
@@ -44,9 +78,6 @@ pub mod pallet {
     const NUM_VEC_LEN: usize = 10;
     /// The type to sign and send transactions.
     const UNSIGNED_TXS_PRIORITY: u64 = 100;
-
-    // We are fetching information from Hacker News public API
-    const HTTP_REMOTE_REQUEST: &str = "https://hacker-news.firebaseio.com/v0/item/9129911.json";
 
     const FETCH_TIMEOUT_PERIOD: u64 = 3000; // in milli-seconds
     const LOCK_TIMEOUT_EXPIRATION: u64 = FETCH_TIMEOUT_PERIOD + 1000; // in milli-seconds
@@ -90,7 +121,7 @@ pub mod pallet {
 
     #[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug, scale_info::TypeInfo)]
     pub struct Payload<Public> {
-        number: u64,
+        skcd_cid: Vec<u8>,
         public: Public,
     }
 
@@ -98,19 +129,6 @@ pub mod pallet {
         fn public(&self) -> T::Public {
             self.public.clone()
         }
-    }
-
-    // ref: https://serde.rs/container-attrs.html#crate
-    #[derive(Deserialize, Encode, Decode, Default, RuntimeDebug, scale_info::TypeInfo)]
-    struct HackerNewsInfo {
-        // Specify our own deserializing function to convert JSON string to vector of bytes
-        #[serde(deserialize_with = "de_string_to_bytes")]
-        by: Vec<u8>,
-        #[serde(deserialize_with = "de_string_to_bytes")]
-        title: Vec<u8>,
-        #[serde(deserialize_with = "de_string_to_bytes")]
-        url: Vec<u8>,
-        descendants: u32,
     }
 
     #[derive(Debug, Deserialize, Encode, Decode, Default)]
@@ -144,12 +162,13 @@ pub mod pallet {
     #[pallet::getter(fn numbers)]
     // Learn more about declaring storage items:
     // https://substrate.dev/docs/en/knowledgebase/runtime/storage#declaring-storage-items
-    pub type Numbers<T> = StorageValue<_, VecDeque<u64>, ValueQuery>;
+    pub type SkcdIpfsCids<T> = StorageValue<_, VecDeque<Vec<u8>>, ValueQuery>;
 
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
     pub enum Event<T: Config> {
-        NewNumber(Option<T::AccountId>, u64),
+        // TODO NewDisplayConfig(Option<T::AccountId>, u32, u32),
+        NewSkcdIpfsCid(Option<T::AccountId>, Vec<u8>),
     }
 
     // Errors inform users that something went wrong.
@@ -186,27 +205,29 @@ pub mod pallet {
         /// so the code should be able to handle that.
         /// You can use `Local Storage` API to coordinate runs of the worker.
         fn offchain_worker(block_number: T::BlockNumber) {
-            log::info!("Hello from pallet-ocw.");
+            log::info!("[ocw] Hello from pallet-ocw.");
 
             // Here we are showcasing various techniques used when running off-chain workers (ocw)
             // 1. Sending signed transaction from ocw
             // 2. Sending unsigned transaction from ocw
             // 3. Sending unsigned transactions with signed payloads from ocw
             // 4. Fetching JSON via http requests in ocw
-            const TX_TYPES: u32 = 4;
-            let modu = block_number
-                .try_into()
-                .map_or(TX_TYPES, |bn: usize| (bn as u32) % TX_TYPES);
-            let result = match modu {
-                0 => Self::offchain_signed_tx(block_number),
-                1 => Self::offchain_unsigned_tx(block_number),
-                2 => Self::offchain_unsigned_tx_signed_payload(block_number),
-                3 => Self::fetch_remote_info(),
-                _ => Err(Error::<T>::UnknownOffchainMux),
-            };
+            // const TX_TYPES: u32 = 4;
+            // let modu = block_number
+            //     .try_into()
+            //     .map_or(TX_TYPES, |bn: usize| (bn as u32) % TX_TYPES);
+            // let result = match modu {
+            // 0 => Self::offchain_signed_tx(block_number),
+            // 1 => Self::offchain_unsigned_tx(block_number),
+            // 2 => Self::offchain_unsigned_tx_signed_payload(block_number),
+            // 3 => Self::fetch_remote_info(),
+            // _ => Err(Error::<T>::UnknownOffchainMux),
+            // };
+
+            let result = Self::fetch_remote_info();
 
             if let Err(e) = result {
-                log::error!("offchain_worker error: {:?}", e);
+                log::error!("[ocw] offchain_worker error: {:?}", e);
             }
         }
     }
@@ -221,111 +242,133 @@ pub mod pallet {
         /// here we make sure that some particular calls (the ones produced by offchain worker)
         /// are being whitelisted and marked as valid.
         fn validate_unsigned(_source: TransactionSource, call: &Self::Call) -> TransactionValidity {
-            let valid_tx = |provide| {
-                ValidTransaction::with_tag_prefix("ocw-demo")
-                    .priority(UNSIGNED_TXS_PRIORITY)
-                    .and_provides([&provide])
-                    .longevity(3)
-                    .propagate(true)
-                    .build()
-            };
+            // let valid_tx = |provide| {
+            //     ValidTransaction::with_tag_prefix("ocw-demo")
+            //         .priority(UNSIGNED_TXS_PRIORITY)
+            //         .and_provides([&provide])
+            //         .longevity(3)
+            //         .propagate(true)
+            //         .build()
+            // };
 
-            match call {
-                Call::submit_number_unsigned { number: _number } => {
-                    valid_tx(b"submit_number_unsigned".to_vec())
-                }
-                Call::submit_number_unsigned_with_signed_payload {
-                    ref payload,
-                    ref signature,
-                } => {
-                    if !SignedPayload::<T>::verify::<T::AuthorityId>(payload, signature.clone()) {
-                        return InvalidTransaction::BadProof.into();
-                    }
-                    valid_tx(b"submit_number_unsigned_with_signed_payload".to_vec())
-                }
-                _ => InvalidTransaction::Call.into(),
-            }
+            // TODO
+            InvalidTransaction::Call.into()
+
+            // match call {
+            //     Call::submit_number_unsigned { number: _number } => {
+            //         valid_tx(b"submit_number_unsigned".to_vec())
+            //     }
+            //     Call::submit_number_unsigned_with_signed_payload {
+            //         ref payload,
+            //         ref signature,
+            //     } => {
+            //         if !SignedPayload::<T>::verify::<T::AuthorityId>(payload, signature.clone()) {
+            //             return InvalidTransaction::BadProof.into();
+            //         }
+            //         valid_tx(b"submit_number_unsigned_with_signed_payload".to_vec())
+            //     }
+            //     _ => InvalidTransaction::Call.into(),
+            // }
         }
     }
 
     #[pallet::call]
     impl<T: Config> Pallet<T> {
         #[pallet::weight(10000)]
-        pub fn submit_number_signed(origin: OriginFor<T>, number: u64) -> DispatchResult {
+        pub fn submit_skcd_cid_signed(origin: OriginFor<T>, skcd_cid: Vec<u8>) -> DispatchResult {
             let who = ensure_signed(origin)?;
-            log::info!("submit_number_signed: ({}, {:?})", number, who);
-            Self::append_or_replace_number(number);
-
-            Self::deposit_event(Event::NewNumber(Some(who), number));
-            Ok(())
-        }
-
-        #[pallet::weight(10000)]
-        pub fn submit_number_unsigned(origin: OriginFor<T>, number: u64) -> DispatchResult {
-            let _ = ensure_none(origin)?;
-            log::info!("submit_number_unsigned: {}", number);
-            Self::append_or_replace_number(number);
-
-            Self::deposit_event(Event::NewNumber(None, number));
-            Ok(())
-        }
-
-        #[pallet::weight(10000)]
-        #[allow(unused_variables)]
-        pub fn submit_number_unsigned_with_signed_payload(
-            origin: OriginFor<T>,
-            payload: Payload<T::Public>,
-            signature: T::Signature,
-        ) -> DispatchResult {
-            let _ = ensure_none(origin)?;
-            // we don't need to verify the signature here because it has been verified in
-            //   `validate_unsigned` function when sending out the unsigned tx.
-            let Payload { number, public } = payload;
             log::info!(
-                "submit_number_unsigned_with_signed_payload: ({}, {:?})",
-                number,
-                public
+                "[ocw] submit_skcd_cid_signed: ({}, {:?})",
+                sp_std::str::from_utf8(&skcd_cid).expect("skcd_cid utf8"),
+                who
             );
-            Self::append_or_replace_number(number);
 
-            Self::deposit_event(Event::NewNumber(None, number));
+            let copy = skcd_cid.clone();
+            Self::append_or_replace_skcd_hash(skcd_cid);
+
+            Self::deposit_event(Event::NewSkcdIpfsCid(Some(who), copy));
             Ok(())
         }
+
+        #[pallet::weight(10000)]
+        pub fn submit_skcd_cid_unsigned(origin: OriginFor<T>, skcd_cid: Vec<u8>) -> DispatchResult {
+            let _ = ensure_none(origin)?;
+            log::info!(
+                "[ocw] submit_skcd_cid_unsigned: {}",
+                sp_std::str::from_utf8(&skcd_cid).expect("skcd_cid utf8")
+            );
+
+            let copy = skcd_cid.clone();
+            Self::append_or_replace_skcd_hash(skcd_cid);
+
+            Self::deposit_event(Event::NewSkcdIpfsCid(None, copy));
+            Ok(())
+        }
+
+        // #[pallet::weight(10000)]
+        // #[allow(unused_variables)]
+        // pub fn submit_number_unsigned_with_signed_payload(
+        //     origin: OriginFor<T>,
+        //     payload: Payload<T::Public>,
+        //     signature: T::Signature,
+        // ) -> DispatchResult {
+        //     let _ = ensure_none(origin)?;
+        //     // we don't need to verify the signature here because it has been verified in
+        //     //   `validate_unsigned` function when sending out the unsigned tx.
+        //     let Payload { skcd_cid, public } = payload;
+        //     log::info!(
+        //         "[ocw] submit_number_unsigned_with_signed_payload: ({}, {:?})",
+        //         skcd_cid,
+        //         public
+        //     );
+        //     Self::append_or_replace_skcd_hash(skcd_cid);
+
+        //     Self::deposit_event(Event::New(None, skcd_cid));
+        //     Ok(())
+        // }
     }
 
     impl<T: Config> Pallet<T> {
         /// Append a new number to the tail of the list, removing an element from the head if reaching
         ///   the bounded length.
-        fn append_or_replace_number(number: u64) {
-            Numbers::<T>::mutate(|numbers| {
-                if numbers.len() == NUM_VEC_LEN {
-                    let _ = numbers.pop_front();
+        fn append_or_replace_skcd_hash(skcd_cid: Vec<u8>) {
+            SkcdIpfsCids::<T>::mutate(|skcd_cids| {
+                if skcd_cids.len() == NUM_VEC_LEN {
+                    let _ = skcd_cids.pop_front();
                 }
-                numbers.push_back(number);
-                log::info!("Number vector: {:?}", numbers);
+                skcd_cids.push_back(skcd_cid);
+                log::info!("[ocw] SkcdIpfsCids vector: {:?}", skcd_cids);
             });
+
+            // TODO refacto: move call to Self::deposit_event in here
         }
 
         /// Check if we have fetched the data before. If yes, we can use the cached version
         ///   stored in off-chain worker storage `storage`. If not, we fetch the remote info and
         ///   write the info into the storage for future retrieval.
         fn fetch_remote_info() -> Result<(), Error<T>> {
-            // Create a reference to Local Storage value.
-            // Since the local storage is common for all offchain workers, it's a good practice
-            // to prepend our entry with the pallet name.
-            let s_info = StorageValueRef::persistent(b"offchain-demo::hn-info");
+            // // Create a reference to Local Storage value.
+            // // Since the local storage is common for all offchain workers, it's a good practice
+            // // to prepend our entry with the pallet name.
+            // let s_info = StorageValueRef::persistent(b"offchain-demo::hn-info");
 
-            // Local storage is persisted and shared between runs of the offchain workers,
-            // offchain workers may run concurrently. We can use the `mutate` function to
-            // write a storage entry in an atomic fashion.
-            //
-            // With a similar API as `StorageValue` with the variables `get`, `set`, `mutate`.
-            // We will likely want to use `mutate` to access
-            // the storage comprehensively.
-            //
-            if let Ok(Some(info)) = s_info.get::<HackerNewsInfo>() {
-                // hn-info has already been fetched. Return early.
-                log::info!("cached hn-info: {:?}", info);
+            // // Local storage is persisted and shared between runs of the offchain workers,
+            // // offchain workers may run concurrently. We can use the `mutate` function to
+            // // write a storage entry in an atomic fashion.
+            // //
+            // // With a similar API as `StorageValue` with the variables `get`, `set`, `mutate`.
+            // // We will likely want to use `mutate` to access
+            // // the storage comprehensively.
+            // //
+            // if let Ok(Some(info)) = s_info.get::<HackerNewsInfo>() {
+            //     // hn-info has already been fetched. Return early.
+            //     log::info!("[ocw] cached hn-info: {:?}", info);
+            //     return Ok(());
+            // }
+
+            let skcd_cids_to_process = <SkcdIpfsCids<T>>::get();
+            if skcd_cids_to_process.is_empty() {
+                log::info!("[ocw] nothing to do, returning...");
                 return Ok(());
             }
 
@@ -344,12 +387,18 @@ pub mod pallet {
                 Duration::from_millis(LOCK_TIMEOUT_EXPIRATION),
             );
 
+            // get the first one from the list to be processed
+            let skcd_cid = SkcdIpfsCids::<T>::mutate(|skcd_cids| skcd_cids.pop_front());
+            let skcd_cid = skcd_cid.expect("skcd_cid.expect");
+
             // We try to acquire the lock here. If failed, we know the `fetch_n_parse` part inside is being
             //   executed by previous run of ocw, so the function just returns.
             if let Ok(_guard) = lock.try_lock() {
-                match Self::fetch_n_parse() {
+                match Self::fetch_n_parse(skcd_cid) {
                     Ok(info) => {
-                        s_info.set(&info);
+                        // TODO return result via tx
+                        // s_info.set(&info);
+                        log::info!("[ocw] FINAL got result IPFS hash : {:x?}", info);
                     }
                     Err(err) => {
                         return Err(err);
@@ -360,144 +409,181 @@ pub mod pallet {
         }
 
         /// Fetch from remote and deserialize the JSON to a struct
-        fn fetch_n_parse() -> Result<HackerNewsInfo, Error<T>> {
-            let resp_bytes = Self::fetch_from_remote().map_err(|e| {
-                log::error!("fetch_from_remote error: {:?}", e);
+        fn fetch_n_parse(skcd_cid: Vec<u8>) -> Result<Vec<u8>, Error<T>> {
+            let resp_bytes = Self::fetch_from_remote(skcd_cid).map_err(|e| {
+                log::error!("[ocw] fetch_from_remote error: {:?}", e);
                 <Error<T>>::HttpFetchingError
             })?;
 
             let resp_str =
                 str::from_utf8(&resp_bytes).map_err(|_| <Error<T>>::DeserializeToStrError)?;
             // Print out our fetched JSON string
-            log::info!("fetch_n_parse: {}", resp_str);
+            log::info!("[ocw] fetch_n_parse: {}", resp_str);
 
-            // Deserializing JSON to struct, thanks to `serde` and `serde_derive`
-            let info: HackerNewsInfo =
-                serde_json::from_str(&resp_str).map_err(|_| <Error<T>>::DeserializeToObjError)?;
-            Ok(info)
+            Ok(resp_str.encode())
         }
 
         /// This function uses the `offchain::http` API to query the remote endpoint information,
         ///   and returns the JSON response as vector of bytes.
-        fn fetch_from_remote() -> Result<Vec<u8>, Error<T>> {
-            // Initiate an external HTTP GET request. This is using high-level wrappers from `sp_runtime`.
-            let request = http::Request::get(HTTP_REMOTE_REQUEST);
+        fn fetch_from_remote(skcd_cid: Vec<u8>) -> Result<Vec<u8>, http::Error> {
+            // We want to keep the offchain worker execution time reasonable, so we set a hard-coded
+            // deadline to 2s to complete the external call.
+            // You can also wait idefinitely for the response, however you may still get a timeout
+            // coming from the host machine.
+            let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(2_000));
 
-            // Keeping the offchain worker execution time reasonable, so limiting the call to be within 3s.
-            let timeout =
-                sp_io::offchain::timestamp().add(Duration::from_millis(FETCH_TIMEOUT_PERIOD));
+            // TODO get from payload(ie tx)
+            let body = crate::encode_body2(skcd_cid);
+            log::info!("[ocw] sending body b64: {}", base64::encode(&body));
 
-            let pending = request
-                .deadline(timeout) // Setting the timeout time
-                .send() // Sending the request out by the host
-                .map_err(|e| {
-                    log::error!("{:?}", e);
-                    <Error<T>>::HttpFetchingError
-                })?;
-
-            // By default, the http request is async from the runtime perspective. So we are asking the
-            //   runtime to wait here
-            // The returning value here is a `Result` of `Result`, so we are unwrapping it twice by two `?`
-            //   ref: https://docs.substrate.io/rustdocs/latest/sp_runtime/offchain/http/struct.PendingRequest.html#method.try_wait
-            let response = pending
-                .try_wait(timeout)
-                .map_err(|e| {
-                    log::error!("{:?}", e);
-                    <Error<T>>::HttpFetchingError
-                })?
-                .map_err(|e| {
-                    log::error!("{:?}", e);
-                    <Error<T>>::HttpFetchingError
-                })?;
-
-            if response.code != 200 {
-                log::error!("Unexpected http request status code: {}", response.code);
-                return Err(<Error<T>>::HttpFetchingError);
-            }
-
-            // Next we fully read the response body and collect it to a vector of bytes.
-            Ok(response.body().collect::<Vec<u8>>())
-        }
-
-        fn offchain_signed_tx(block_number: T::BlockNumber) -> Result<(), Error<T>> {
-            // We retrieve a signer and check if it is valid.
-            //   Since this pallet only has one key in the keystore. We use `any_account()1 to
-            //   retrieve it. If there are multiple keys and we want to pinpoint it, `with_filter()` can be chained,
-            let signer = Signer::<T, T::AuthorityId>::any_account();
-
-            // Translating the current block number to number and submit it on-chain
-            let number: u64 = block_number.try_into().unwrap_or(0);
-
-            // `result` is in the type of `Option<(Account<T>, Result<(), ()>)>`. It is:
-            //   - `None`: no account is available for sending transaction
-            //   - `Some((account, Ok(())))`: transaction is successfully sent
-            //   - `Some((account, Err(())))`: error occured when sending the transaction
-            let result = signer.send_signed_transaction(|_acct|
-				// This is the on-chain function
-				Call::submit_number_signed { number });
-
-            // Display error if the signed tx fails.
-            if let Some((acc, res)) = result {
-                if res.is_err() {
-                    log::error!("failure: offchain_signed_tx: tx sent: {:?}", acc.id);
-                    return Err(<Error<T>>::OffchainSignedTxError);
-                }
-                // Transaction is sent successfully
-                return Ok(());
-            }
-
-            // The case of `None`: no account is available for sending
-            log::error!("No local account available");
-            Err(<Error<T>>::NoLocalAcctForSigning)
-        }
-
-        fn offchain_unsigned_tx(block_number: T::BlockNumber) -> Result<(), Error<T>> {
-            let number: u64 = block_number.try_into().unwrap_or(0);
-            let call = Call::submit_number_unsigned { number };
-
-            // `submit_unsigned_transaction` returns a type of `Result<(), ()>`
-            //   ref: https://substrate.dev/rustdocs/v2.0.0/frame_system/offchain/struct.SubmitTransaction.html#method.submit_unsigned_transaction
-            SubmitTransaction::<T, Call<T>>::submit_unsigned_transaction(call.into()).map_err(
-                |_| {
-                    log::error!("Failed in offchain_unsigned_tx");
-                    <Error<T>>::OffchainUnsignedTxError
-                },
+            // Initiate an external HTTP GET request.
+            // This is using high-level wrappers from `sp_runtime`, for the low-level calls that
+            // you can find in `sp_io`. The API is trying to be similar to `reqwest`, but
+            // since we are running in a custom WASM execution environment we can't simply
+            // import the library here.
+            //
+            // cf https://github.com/hyperium/tonic/blob/master/tonic-web/tests/integration/tests/grpc_web.rs
+            // syntax = "proto3";
+            // package test;
+            // service Test {
+            //		rpc SomeRpc(Input) returns (Output);
+            // -> curl http://127.0.0.1:3000/test.Test/SomeRpc
+            //
+            // NOTE application/grpc-web == application/grpc-web+proto
+            //      application/grpc-web-text = base64
+            //
+            // eg:
+            // printf '\x00\x00\x00\x00\x05\x08\xe0\x01\x10\x60' | curl -skv -H "Content-Type: application/grpc-web+proto" -H "X-Grpc-Web: 1" -H "Accept: application/grpc-web-text+proto" -X POST --data-binary @- http://127.0.0.1:3000/interstellarpbapigarble.SkcdApi/GenerateSkcdDisplay
+            let request = http::Request::post(
+                "http://127.0.0.1:3001/interstellarpbapigarble.GarbleApi/GarbleIpfs",
+                vec![body],
             )
-        }
+            .add_header("Content-Type", "application/grpc-web")
+            .add_header("X-Grpc-Web", "1");
 
-        fn offchain_unsigned_tx_signed_payload(
-            block_number: T::BlockNumber,
-        ) -> Result<(), Error<T>> {
-            // Retrieve the signer to sign the payload
-            let signer = Signer::<T, T::AuthorityId>::any_account();
+            // We set the deadline for sending of the request, note that awaiting response can
+            // have a separate deadline. Next we send the request, before that it's also possible
+            // to alter request headers or stream body content in case of non-GET requests.
+            let pending = request
+                .deadline(deadline)
+                .send()
+                .map_err(|_| http::Error::IoError)?;
 
-            let number: u64 = block_number.try_into().unwrap_or(0);
+            // The request is already being processed by the host, we are free to do anything
+            // else in the worker (we can send multiple concurrent requests too).
+            // At some point however we probably want to check the response though,
+            // so we can block current thread and wait for it to finish.
+            // Note that since the request is being driven by the host, we don't have to wait
+            // for the request to have it complete, we will just not read the response.
+            let mut response = pending
+                .try_wait(deadline)
+                .map_err(|_| http::Error::DeadlineReached)??;
 
-            // `send_unsigned_transaction` is returning a type of `Option<(Account<T>, Result<(), ()>)>`.
-            //   Similar to `send_signed_transaction`, they account for:
-            //   - `None`: no account is available for sending transaction
-            //   - `Some((account, Ok(())))`: transaction is successfully sent
-            //   - `Some((account, Err(())))`: error occured when sending the transaction
-            if let Some((_, res)) = signer.send_unsigned_transaction(
-                |acct| Payload {
-                    number,
-                    public: acct.public.clone(),
-                },
-                |payload, signature| Call::submit_number_unsigned_with_signed_payload {
-                    payload,
-                    signature,
-                },
-            ) {
-                return res.map_err(|_| {
-                    log::error!("Failed in offchain_unsigned_tx_signed_payload");
-                    <Error<T>>::OffchainUnsignedTxSignedPayloadError
-                });
+            log::info!("[ocw] status code: {}", response.code);
+            let mut headers_it = response.headers().into_iter();
+            while headers_it.next() {
+                let header = headers_it.current().unwrap();
+                log::info!("[ocw] header: {} {}", header.0, header.1);
             }
 
-            // The case of `None`: no account is available for sending
-            log::error!("No local account available");
-            Err(<Error<T>>::NoLocalAcctForSigning)
+            // Let's check the status code before we proceed to reading the response.
+            if response.code != 200 {
+                log::warn!("[ocw] Unexpected status code: {}", response.code);
+                return Err(http::Error::Unknown);
+            }
+
+            // TODO handle like parse_price
+            let body_bytes = response.body().collect::<bytes::Bytes>();
+            let (reply, trailers) = crate::decode_body2(body_bytes, "application/grpc-web");
+
+            log::info!(
+                "[ocw] Got gRPC trailers: {}",
+                sp_std::str::from_utf8(&trailers).expect("trailers")
+            );
+            log::info!("[ocw] Got IPFS hash: {}", reply.pgarbled_cid);
+
+            Ok(reply.pgarbled_cid.bytes().collect())
         }
+
+        // fn offchain_signed_tx(block_number: T::BlockNumber) -> Result<(), Error<T>> {
+        //     // We retrieve a signer and check if it is valid.
+        //     //   Since this pallet only has one key in the keystore. We use `any_account()1 to
+        //     //   retrieve it. If there are multiple keys and we want to pinpoint it, `with_filter()` can be chained,
+        //     let signer = Signer::<T, T::AuthorityId>::any_account();
+
+        //     // Translating the current block number to number and submit it on-chain
+        //     let number: u64 = block_number.try_into().unwrap_or(0);
+
+        //     // `result` is in the type of `Option<(Account<T>, Result<(), ()>)>`. It is:
+        //     //   - `None`: no account is available for sending transaction
+        //     //   - `Some((account, Ok(())))`: transaction is successfully sent
+        //     //   - `Some((account, Err(())))`: error occured when sending the transaction
+        //     let result = signer.send_signed_transaction(|_acct|
+        // 		// This is the on-chain function
+        // 		Call::submit_number_signed { number });
+
+        //     // Display error if the signed tx fails.
+        //     if let Some((acc, res)) = result {
+        //         if res.is_err() {
+        //             log::error!("[ocw] failure: offchain_signed_tx: tx sent: {:?}", acc.id);
+        //             return Err(<Error<T>>::OffchainSignedTxError);
+        //         }
+        //         // Transaction is sent successfully
+        //         return Ok(());
+        //     }
+
+        //     // The case of `None`: no account is available for sending
+        //     log::error!("[ocw] No local account available");
+        //     Err(<Error<T>>::NoLocalAcctForSigning)
+        // }
+
+        // fn offchain_unsigned_tx(block_number: T::BlockNumber) -> Result<(), Error<T>> {
+        //     let number: u64 = block_number.try_into().unwrap_or(0);
+        //     let call = Call::submit_number_unsigned { number };
+
+        //     // `submit_unsigned_transaction` returns a type of `Result<(), ()>`
+        //     //   ref: https://substrate.dev/rustdocs/v2.0.0/frame_system/offchain/struct.SubmitTransaction.html#method.submit_unsigned_transaction
+        //     SubmitTransaction::<T, Call<T>>::submit_unsigned_transaction(call.into()).map_err(
+        //         |_| {
+        //             log::error!("[ocw] Failed in offchain_unsigned_tx");
+        //             <Error<T>>::OffchainUnsignedTxError
+        //         },
+        //     )
+        // }
+
+        // fn offchain_unsigned_tx_signed_payload(
+        //     block_number: T::BlockNumber,
+        // ) -> Result<(), Error<T>> {
+        //     // Retrieve the signer to sign the payload
+        //     let signer = Signer::<T, T::AuthorityId>::any_account();
+
+        //     let number: u64 = block_number.try_into().unwrap_or(0);
+
+        //     // `send_unsigned_transaction` is returning a type of `Option<(Account<T>, Result<(), ()>)>`.
+        //     //   Similar to `send_signed_transaction`, they account for:
+        //     //   - `None`: no account is available for sending transaction
+        //     //   - `Some((account, Ok(())))`: transaction is successfully sent
+        //     //   - `Some((account, Err(())))`: error occured when sending the transaction
+        //     if let Some((_, res)) = signer.send_unsigned_transaction(
+        //         |acct| Payload {
+        //             number,
+        //             public: acct.public.clone(),
+        //         },
+        //         |payload, signature| Call::submit_number_unsigned_with_signed_payload {
+        //             payload,
+        //             signature,
+        //         },
+        //     ) {
+        //         return res.map_err(|_| {
+        //             log::error!("[ocw] Failed in offchain_unsigned_tx_signed_payload");
+        //             <Error<T>>::OffchainUnsignedTxSignedPayloadError
+        //         });
+        //     }
+
+        //     // The case of `None`: no account is available for sending
+        //     log::error!("[ocw] No local account available");
+        //     Err(<Error<T>>::NoLocalAcctForSigning)
+        // }
     }
 
     impl<T: Config> BlockNumberProvider for Pallet<T> {
@@ -507,4 +593,57 @@ pub mod pallet {
             <frame_system::Pallet<T>>::block_number()
         }
     }
+}
+
+// we CAN NOT just send the raw encoded protobuf(eg using GarbleIpfsRequest{}.encode())
+// b/c that returns errors like
+// "protocol error: received message with invalid compression flag: 8 (valid flags are 0 and 1), while sending request"
+// "tonic-web: Invalid byte 45, offset 0"
+// https://github.com/hyperium/tonic/blob/01e5be508051eebf19c233d48b57797a17331383/tonic-web/tests/integration/tests/grpc_web.rs#L93
+// also: https://github.com/grpc/grpc-web/issues/152
+fn encode_body2(skcd_cid: Vec<u8>) -> bytes::Bytes {
+    log::info!("[ocw] encode_body2: {:x?}", skcd_cid);
+
+    let skcd_cid_str = sp_std::str::from_utf8(&skcd_cid)
+        .expect("encode_body2 from_utf8")
+        .to_owned();
+    let input = interstellarpbapigarble::GarbleIpfsRequest {
+        skcd_cid: skcd_cid_str,
+    };
+
+    let mut buf = bytes::BytesMut::with_capacity(1024);
+    buf.reserve(5);
+    unsafe {
+        buf.advance_mut(5);
+    }
+
+    input.encode(&mut buf).unwrap();
+
+    let len = buf.len() - 5;
+    {
+        let mut buf = &mut buf[..5];
+        buf.put_u8(0);
+        buf.put_u32(len as u32);
+    }
+
+    buf.split_to(len + 5).freeze()
+}
+
+fn decode_body2(
+    body_bytes: bytes::Bytes,
+    content_type: &str,
+) -> (interstellarpbapigarble::GarbleIpfsReply, bytes::Bytes) {
+    let mut body = body_bytes;
+
+    if content_type == "application/grpc-web-text+proto" {
+        body = base64::decode(body).unwrap().into()
+    }
+
+    body.advance(1);
+    let len = body.get_u32();
+    let msg = interstellarpbapigarble::GarbleIpfsReply::decode(&mut body.split_to(len as usize))
+        .expect("decode");
+    body.advance(5);
+
+    (msg, body)
 }

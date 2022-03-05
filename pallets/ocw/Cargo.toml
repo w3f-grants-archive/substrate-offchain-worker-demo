@@ -6,44 +6,61 @@ authors = ['Substrate DevHub <https://github.com/substrate-developer-hub>']
 repository = "https://github.com/jimmychu0807/substrate-offchain-worker-demo"
 description = "A pallet that demonstrates off-chain workers feature in Substrate"
 license = "GPL-3.0-or-later"
+build = "build.rs"
 
 [package.metadata.substrate]
 categories = [
 	"pallet",
 	"offchain worker",
 ]
+scale-info = { default-features = false, features = ['derive'], version = '1.0' }
+serde = { version = '1.0.130', default-features = false, features = ['derive'] }
+serde_json = { version = '1.0.67', default-features = false, features = ['alloc'] }
 
 [package.metadata.docs.rs]
 targets = ['x86_64-unknown-linux-gnu']
 
 [dependencies]
+codec = { package = "parity-scale-codec", version = "2.0.0", default-features = false }
 log = { version = "0.4.14", default-features = false }
-parity-scale-codec = { default-features = false, features = ['derive'], version = '2.0.0' }
-parking_lot = "0.11"
-scale-info = { default-features = false, features = ['derive'], version = '1.0' }
+scale-info = { version = "1.0", default-features = false, features = ["derive"] }
+
 serde = { version = '1.0.130', default-features = false, features = ['derive'] }
 serde_json = { version = '1.0.67', default-features = false, features = ['alloc'] }
+parking_lot = "0.11"
+base64 = { default-features = false, features = ["alloc"], version = "0.13" }
+bytes = { version = "1.1.0", default-features = false }
+
+# https://github.com/tokio-rs/prost#using-prost-in-a-no_std-crate
+prost = { version = "0.9", default-features = false, features = ["prost-derive"] }
+# "Only necessary if using Protobuf well-known types:"
+prost-types = { version = "0.9", default-features = false }
 
 # Substrate packages
 
-frame-support = { git = 'https://github.com/paritytech/substrate.git', tag = 'monthly-2021-10', version = '4.0.0-dev', default-features = false }
-frame-system = { git = 'https://github.com/paritytech/substrate.git', tag = 'monthly-2021-10', version = '4.0.0-dev', default-features = false }
-sp-arithmetic = { git = 'https://github.com/paritytech/substrate.git', tag = 'monthly-2021-10', version = '4.0.0-dev', default-features = false }
-sp-core = { git = 'https://github.com/paritytech/substrate.git', tag = 'monthly-2021-10', version = '4.0.0-dev', default-features = false }
-sp-io = { git = 'https://github.com/paritytech/substrate.git', tag = 'monthly-2021-10', version = '4.0.0-dev', default-features = false }
-sp-runtime = { git = 'https://github.com/paritytech/substrate.git', tag = 'monthly-2021-10', version = '4.0.0-dev', default-features = false }
-sp-std = { git = 'https://github.com/paritytech/substrate.git', tag = 'monthly-2021-10', version = '4.0.0-dev', default-features = false }
+frame-support = { version = "4.0.0-dev", default-features = false, git = 'https://github.com/paritytech/substrate.git', tag = 'monthly-2021-10' }
+frame-system = { version = "4.0.0-dev", default-features = false, git = 'https://github.com/paritytech/substrate.git', tag = 'monthly-2021-10' }
+sp-core = { version = "4.0.0-dev", default-features = false, git = 'https://github.com/paritytech/substrate.git', tag = 'monthly-2021-10' }
+sp-io = { version = "4.0.0-dev", default-features = false, git = 'https://github.com/paritytech/substrate.git', tag = 'monthly-2021-10' }
+sp-keystore = { version = "0.10.0-dev", git = 'https://github.com/paritytech/substrate.git', tag = 'monthly-2021-10', optional = true }
+sp-runtime = { version = "4.0.0-dev", default-features = false, git = 'https://github.com/paritytech/substrate.git', tag = 'monthly-2021-10' }
+sp-std = { version = "4.0.0-dev", default-features = false, git = 'https://github.com/paritytech/substrate.git', tag = 'monthly-2021-10' }
 
 [features]
-default = ['std']
+default = ["std"]
 std = [
-	'frame-support/std',
-	'frame-system/std',
-	'log/std',
-	'parity-scale-codec/std',
-	'sp-arithmetic/std',
-	'sp-io/std',
-	'sp-runtime/std',
-	'sp-std/std',
+	"codec/std",
+	"frame-support/std",
+	"frame-system/std",
+	"log/std",
+	"scale-info/std",
+	"sp-core/std",
+	"sp-io/std",
+	"sp-keystore",
+	"sp-runtime/std",
+	"sp-std/std",
 ]
 try-runtime = ["frame-support/try-runtime"]
+
+[build-dependencies]
+prost-build = "0.9.0"

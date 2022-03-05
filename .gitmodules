@@ -1,0 +1,6 @@
+[submodule "pallets/example-offchain-worker/deps/protos"]
+	path = pallets/example-offchain-worker/deps/protos
+	url = git@github.com:Interstellar-Network/protos.git
+[submodule "pallets/ocw/deps/protos"]
+	path = pallets/ocw/deps/protos
+	url = git@github.com:Interstellar-Network/protos.git
