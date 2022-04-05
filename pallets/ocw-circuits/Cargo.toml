@@ -1,40 +1,27 @@
 [package]
-name = "pallet-ocw"
-version = "1.0.0"
+name = "pallet-ocw-circuits"
+version = "4.0.0-dev"
+authors = ["Parity Technologies <admin@parity.io>"]
 edition = "2018"
-authors = ['Substrate DevHub <https://github.com/substrate-developer-hub>']
-repository = "https://github.com/jimmychu0807/substrate-offchain-worker-demo"
-description = "A pallet that demonstrates off-chain workers feature in Substrate"
-license = "GPL-3.0-or-later"
+license = "Unlicense"
+homepage = "https://substrate.io"
+repository = "https://github.com/paritytech/substrate/"
+description = "FRAME example pallet for offchain worker"
+readme = "README.md"
 build = "build.rs"
 
-[package.metadata.substrate]
-categories = [
-	"pallet",
-	"offchain worker",
-]
-scale-info = { default-features = false, features = ['derive'], version = '1.0' }
-serde = { version = '1.0.130', default-features = false, features = ['derive'] }
-serde_json = { version = '1.0.67', default-features = false, features = ['alloc'] }
-
 [package.metadata.docs.rs]
-targets = ['x86_64-unknown-linux-gnu']
+targets = ["x86_64-unknown-linux-gnu"]
 
 [dependencies]
 codec = { package = "parity-scale-codec", version = "2.0.0", default-features = false }
+lite-json = { version = "0.1", default-features = false }
 log = { version = "0.4.14", default-features = false }
 scale-info = { version = "1.0", default-features = false, features = ["derive"] }
-
 serde = { version = '1.0.130', default-features = false, features = ['derive'] }
 serde_json = { version = '1.0.67', default-features = false, features = ['alloc'] }
-parking_lot = "0.11"
 base64 = { default-features = false, features = ["alloc"], version = "0.13" }
 bytes = { version = "1.1.0", default-features = false }
-
-# https://github.com/tokio-rs/prost#using-prost-in-a-no_std-crate
-prost = { version = "0.9", default-features = false, features = ["prost-derive"] }
-# "Only necessary if using Protobuf well-known types:"
-prost-types = { version = "0.9", default-features = false }
 
 # Substrate packages
 
@@ -46,12 +33,24 @@ sp-keystore = { version = "0.10.0-dev", git = 'https://github.com/paritytech/sub
 sp-runtime = { version = "4.0.0-dev", default-features = false, git = 'https://github.com/paritytech/substrate.git', tag = 'monthly-2021-10' }
 sp-std = { version = "4.0.0-dev", default-features = false, git = 'https://github.com/paritytech/substrate.git', tag = 'monthly-2021-10' }
 
+# https://github.com/tokio-rs/prost#using-prost-in-a-no_std-crate
+prost = { version = "0.9", default-features = false, features = ["prost-derive"] }
+# "Only necessary if using Protobuf well-known types:"
+prost-types = { version = "0.9", default-features = false }
+
+# prost: could not find a way to use encode() in no_std context...
+# = note: the lang item is first defined in crate `std` (which `byteorder` depends on)
+# = note: first definition in `std` loaded from /home/pratn/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/wasm32-unknown-unknown/lib/libstd-d9a8e4ca4a56d589.rlib
+# quick-protobuf = { version = "0.8.0", default-features = false }
+# quick-protobuf = "0.8.0"
+
 [features]
 default = ["std"]
 std = [
 	"codec/std",
 	"frame-support/std",
 	"frame-system/std",
+	"lite-json/std",
 	"log/std",
 	"scale-info/std",
 	"sp-core/std",
@@ -64,3 +63,6 @@ try-runtime = ["frame-support/try-runtime"]
 
 [build-dependencies]
 prost-build = "0.9.0"
+
+# pb-rs = "0.9.1"
+# walkdir = "2.3.2"

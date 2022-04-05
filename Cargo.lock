@@ -3577,9 +3577,9 @@ dependencies = [
  "log",
  "pallet-aura",
  "pallet-balances",
- "pallet-example-offchain-worker",
  "pallet-grandpa",
- "pallet-ocw",
+ "pallet-ocw-circuits",
+ "pallet-ocw-garble",
  "pallet-randomness-collective-flip",
  "pallet-sudo",
  "pallet-template",
@@ -3799,30 +3799,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pallet-example-offchain-worker"
-version = "4.0.0-dev"
-dependencies = [
- "base64 0.13.0",
- "bytes 1.1.0",
- "frame-support",
- "frame-system",
- "lite-json",
- "log",
- "parity-scale-codec",
- "prost 0.9.0",
- "prost-build 0.9.0",
- "prost-types 0.9.0",
- "scale-info",
- "serde",
- "serde_json",
- "sp-core",
- "sp-io",
- "sp-keystore",
- "sp-runtime",
- "sp-std",
-]
-
-[[package]]
 name = "pallet-grandpa"
 version = "4.0.0-dev"
 source = "git+https://github.com/paritytech/substrate.git?tag=monthly-2021-10#bf9683eee40f82cc4e01a05cd375b0e8bba3c8ef"
@@ -3846,7 +3822,31 @@ dependencies = [
 ]
 
 [[package]]
-name = "pallet-ocw"
+name = "pallet-ocw-circuits"
+version = "4.0.0-dev"
+dependencies = [
+ "base64 0.13.0",
+ "bytes 1.1.0",
+ "frame-support",
+ "frame-system",
+ "lite-json",
+ "log",
+ "parity-scale-codec",
+ "prost 0.9.0",
+ "prost-build 0.9.0",
+ "prost-types 0.9.0",
+ "scale-info",
+ "serde",
+ "serde_json",
+ "sp-core",
+ "sp-io",
+ "sp-keystore",
+ "sp-runtime",
+ "sp-std",
+]
+
+[[package]]
+name = "pallet-ocw-garble"
 version = "1.0.0"
 dependencies = [
  "base64 0.13.0",

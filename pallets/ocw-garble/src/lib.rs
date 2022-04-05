@@ -205,7 +205,7 @@ pub mod pallet {
         /// so the code should be able to handle that.
         /// You can use `Local Storage` API to coordinate runs of the worker.
         fn offchain_worker(block_number: T::BlockNumber) {
-            log::info!("[ocw] Hello from pallet-ocw.");
+            log::info!("[ocw-garble] Hello from pallet-ocw-garble.");
 
             // Here we are showcasing various techniques used when running off-chain workers (ocw)
             // 1. Sending signed transaction from ocw
@@ -227,7 +227,7 @@ pub mod pallet {
             let result = Self::fetch_remote_info();
 
             if let Err(e) = result {
-                log::error!("[ocw] offchain_worker error: {:?}", e);
+                log::error!("[ocw-garble] offchain_worker error: {:?}", e);
             }
         }
     }
@@ -278,7 +278,7 @@ pub mod pallet {
         pub fn submit_skcd_cid_signed(origin: OriginFor<T>, skcd_cid: Vec<u8>) -> DispatchResult {
             let who = ensure_signed(origin)?;
             log::info!(
-                "[ocw] submit_skcd_cid_signed: ({}, {:?})",
+                "[ocw-garble] submit_skcd_cid_signed: ({}, {:?})",
                 sp_std::str::from_utf8(&skcd_cid).expect("skcd_cid utf8"),
                 who
             );
@@ -294,7 +294,7 @@ pub mod pallet {
         pub fn submit_skcd_cid_unsigned(origin: OriginFor<T>, skcd_cid: Vec<u8>) -> DispatchResult {
             let _ = ensure_none(origin)?;
             log::info!(
-                "[ocw] submit_skcd_cid_unsigned: {}",
+                "[ocw-garble] submit_skcd_cid_unsigned: {}",
                 sp_std::str::from_utf8(&skcd_cid).expect("skcd_cid utf8")
             );
 
@@ -317,7 +317,7 @@ pub mod pallet {
         //     //   `validate_unsigned` function when sending out the unsigned tx.
         //     let Payload { skcd_cid, public } = payload;
         //     log::info!(
-        //         "[ocw] submit_number_unsigned_with_signed_payload: ({}, {:?})",
+        //         "[ocw-garble] submit_number_unsigned_with_signed_payload: ({}, {:?})",
         //         skcd_cid,
         //         public
         //     );
@@ -337,7 +337,7 @@ pub mod pallet {
                     let _ = skcd_cids.pop_front();
                 }
                 skcd_cids.push_back(skcd_cid);
-                log::info!("[ocw] SkcdIpfsCids vector: {:?}", skcd_cids);
+                log::info!("[ocw-garble] SkcdIpfsCids vector: {:?}", skcd_cids);
             });
 
             // TODO refacto: move call to Self::deposit_event in here
@@ -362,13 +362,13 @@ pub mod pallet {
             // //
             // if let Ok(Some(info)) = s_info.get::<HackerNewsInfo>() {
             //     // hn-info has already been fetched. Return early.
-            //     log::info!("[ocw] cached hn-info: {:?}", info);
+            //     log::info!("[ocw-garble] cached hn-info: {:?}", info);
             //     return Ok(());
             // }
 
             let skcd_cids_to_process = <SkcdIpfsCids<T>>::get();
             if skcd_cids_to_process.is_empty() {
-                log::info!("[ocw] nothing to do, returning...");
+                log::info!("[ocw-garble] nothing to do, returning...");
                 return Ok(());
             }
 
@@ -398,7 +398,7 @@ pub mod pallet {
                     Ok(info) => {
                         // TODO return result via tx
                         // s_info.set(&info);
-                        log::info!("[ocw] FINAL got result IPFS hash : {:x?}", info);
+                        log::info!("[ocw-garble] FINAL got result IPFS hash : {:x?}", info);
                     }
                     Err(err) => {
                         return Err(err);
@@ -411,14 +411,14 @@ pub mod pallet {
         /// Fetch from remote and deserialize the JSON to a struct
         fn fetch_n_parse(skcd_cid: Vec<u8>) -> Result<Vec<u8>, Error<T>> {
             let resp_bytes = Self::fetch_from_remote(skcd_cid).map_err(|e| {
-                log::error!("[ocw] fetch_from_remote error: {:?}", e);
+                log::error!("[ocw-garble] fetch_from_remote error: {:?}", e);
                 <Error<T>>::HttpFetchingError
             })?;
 
             let resp_str =
                 str::from_utf8(&resp_bytes).map_err(|_| <Error<T>>::DeserializeToStrError)?;
             // Print out our fetched JSON string
-            log::info!("[ocw] fetch_n_parse: {}", resp_str);
+            log::info!("[ocw-garble] fetch_n_parse: {}", resp_str);
 
             Ok(resp_str.encode())
         }
@@ -434,7 +434,7 @@ pub mod pallet {
 
             // TODO get from payload(ie tx)
             let body = crate::encode_body2(skcd_cid);
-            log::info!("[ocw] sending body b64: {}", base64::encode(&body));
+            log::info!("[ocw-garble] sending body b64: {}", base64::encode(&body));
 
             // Initiate an external HTTP GET request.
             // This is using high-level wrappers from `sp_runtime`, for the low-level calls that
@@ -479,16 +479,16 @@ pub mod pallet {
                 .try_wait(deadline)
                 .map_err(|_| http::Error::DeadlineReached)??;
 
-            log::info!("[ocw] status code: {}", response.code);
+            log::info!("[ocw-garble] status code: {}", response.code);
             let mut headers_it = response.headers().into_iter();
             while headers_it.next() {
                 let header = headers_it.current().unwrap();
-                log::info!("[ocw] header: {} {}", header.0, header.1);
+                log::info!("[ocw-garble] header: {} {}", header.0, header.1);
             }
 
             // Let's check the status code before we proceed to reading the response.
             if response.code != 200 {
-                log::warn!("[ocw] Unexpected status code: {}", response.code);
+                log::warn!("[ocw-garble] Unexpected status code: {}", response.code);
                 return Err(http::Error::Unknown);
             }
 
@@ -497,10 +497,10 @@ pub mod pallet {
             let (reply, trailers) = crate::decode_body2(body_bytes, "application/grpc-web");
 
             log::info!(
-                "[ocw] Got gRPC trailers: {}",
+                "[ocw-garble] Got gRPC trailers: {}",
                 sp_std::str::from_utf8(&trailers).expect("trailers")
             );
-            log::info!("[ocw] Got IPFS hash: {}", reply.pgarbled_cid);
+            log::info!("[ocw-garble] Got IPFS hash: {}", reply.pgarbled_cid);
 
             Ok(reply.pgarbled_cid.bytes().collect())
         }
@@ -525,7 +525,7 @@ pub mod pallet {
         //     // Display error if the signed tx fails.
         //     if let Some((acc, res)) = result {
         //         if res.is_err() {
-        //             log::error!("[ocw] failure: offchain_signed_tx: tx sent: {:?}", acc.id);
+        //             log::error!("[ocw-garble] failure: offchain_signed_tx: tx sent: {:?}", acc.id);
         //             return Err(<Error<T>>::OffchainSignedTxError);
         //         }
         //         // Transaction is sent successfully
@@ -533,7 +533,7 @@ pub mod pallet {
         //     }
 
         //     // The case of `None`: no account is available for sending
-        //     log::error!("[ocw] No local account available");
+        //     log::error!("[ocw-garble] No local account available");
         //     Err(<Error<T>>::NoLocalAcctForSigning)
         // }
 
@@ -545,7 +545,7 @@ pub mod pallet {
         //     //   ref: https://substrate.dev/rustdocs/v2.0.0/frame_system/offchain/struct.SubmitTransaction.html#method.submit_unsigned_transaction
         //     SubmitTransaction::<T, Call<T>>::submit_unsigned_transaction(call.into()).map_err(
         //         |_| {
-        //             log::error!("[ocw] Failed in offchain_unsigned_tx");
+        //             log::error!("[ocw-garble] Failed in offchain_unsigned_tx");
         //             <Error<T>>::OffchainUnsignedTxError
         //         },
         //     )
@@ -575,13 +575,13 @@ pub mod pallet {
         //         },
         //     ) {
         //         return res.map_err(|_| {
-        //             log::error!("[ocw] Failed in offchain_unsigned_tx_signed_payload");
+        //             log::error!("[ocw-garble] Failed in offchain_unsigned_tx_signed_payload");
         //             <Error<T>>::OffchainUnsignedTxSignedPayloadError
         //         });
         //     }
 
         //     // The case of `None`: no account is available for sending
-        //     log::error!("[ocw] No local account available");
+        //     log::error!("[ocw-garble] No local account available");
         //     Err(<Error<T>>::NoLocalAcctForSigning)
         // }
     }
@@ -602,7 +602,7 @@ pub mod pallet {
 // https://github.com/hyperium/tonic/blob/01e5be508051eebf19c233d48b57797a17331383/tonic-web/tests/integration/tests/grpc_web.rs#L93
 // also: https://github.com/grpc/grpc-web/issues/152
 fn encode_body2(skcd_cid: Vec<u8>) -> bytes::Bytes {
-    log::info!("[ocw] encode_body2: {:x?}", skcd_cid);
+    log::info!("[ocw-garble] encode_body2: {:x?}", skcd_cid);
 
     let skcd_cid_str = sp_std::str::from_utf8(&skcd_cid)
         .expect("encode_body2 from_utf8")
