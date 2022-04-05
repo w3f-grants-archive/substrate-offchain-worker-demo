@@ -83,6 +83,9 @@ pub mod pallet {
     const LOCK_TIMEOUT_EXPIRATION: u64 = FETCH_TIMEOUT_PERIOD + 1000; // in milli-seconds
     const LOCK_BLOCK_EXPIRATION: u32 = 3; // in block number
 
+    const ONCHAIN_TX_KEY: &[u8] = b"ocw-garble::storage::tx";
+    const LOCK_KEY: &[u8] = b"ocw-garble::lock";
+
     /// Based on the above `KeyTypeId` we need to generate a pallet-specific crypto type wrapper.
     /// We can utilize the supported crypto kinds (`sr25519`, `ed25519` and `ecdsa`) and augment
     /// them with the pallet-specific identifier.
@@ -131,17 +134,6 @@ pub mod pallet {
         }
     }
 
-    #[derive(Debug, Deserialize, Encode, Decode, Default)]
-    struct IndexingData(Vec<u8>, u64);
-
-    pub fn de_string_to_bytes<'de, D>(de: D) -> Result<Vec<u8>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s: &str = Deserialize::deserialize(de)?;
-        Ok(s.as_bytes().to_vec())
-    }
-
     #[pallet::config]
     pub trait Config: frame_system::Config + CreateSignedTransaction<Call<Self>> {
         /// The overarching event type.
@@ -155,14 +147,6 @@ pub mod pallet {
     #[pallet::pallet]
     #[pallet::generate_store(pub(super) trait Store)]
     pub struct Pallet<T>(_);
-
-    // The pallet's runtime storage items.
-    // https://substrate.dev/docs/en/knowledgebase/runtime/storage
-    #[pallet::storage]
-    #[pallet::getter(fn numbers)]
-    // Learn more about declaring storage items:
-    // https://substrate.dev/docs/en/knowledgebase/runtime/storage#declaring-storage-items
-    pub type SkcdIpfsCids<T> = StorageValue<_, VecDeque<Vec<u8>>, ValueQuery>;
 
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
@@ -207,24 +191,7 @@ pub mod pallet {
         fn offchain_worker(block_number: T::BlockNumber) {
             log::info!("[ocw-garble] Hello from pallet-ocw-garble.");
 
-            // Here we are showcasing various techniques used when running off-chain workers (ocw)
-            // 1. Sending signed transaction from ocw
-            // 2. Sending unsigned transaction from ocw
-            // 3. Sending unsigned transactions with signed payloads from ocw
-            // 4. Fetching JSON via http requests in ocw
-            // const TX_TYPES: u32 = 4;
-            // let modu = block_number
-            //     .try_into()
-            //     .map_or(TX_TYPES, |bn: usize| (bn as u32) % TX_TYPES);
-            // let result = match modu {
-            // 0 => Self::offchain_signed_tx(block_number),
-            // 1 => Self::offchain_unsigned_tx(block_number),
-            // 2 => Self::offchain_unsigned_tx_signed_payload(block_number),
-            // 3 => Self::fetch_remote_info(),
-            // _ => Err(Error::<T>::UnknownOffchainMux),
-            // };
-
-            let result = Self::fetch_remote_info();
+            let result = Self::fetch_remote_info(block_number);
 
             if let Err(e) = result {
                 log::error!("[ocw-garble] offchain_worker error: {:?}", e);
@@ -242,33 +209,8 @@ pub mod pallet {
         /// here we make sure that some particular calls (the ones produced by offchain worker)
         /// are being whitelisted and marked as valid.
         fn validate_unsigned(_source: TransactionSource, call: &Self::Call) -> TransactionValidity {
-            // let valid_tx = |provide| {
-            //     ValidTransaction::with_tag_prefix("ocw-demo")
-            //         .priority(UNSIGNED_TXS_PRIORITY)
-            //         .and_provides([&provide])
-            //         .longevity(3)
-            //         .propagate(true)
-            //         .build()
-            // };
-
-            // TODO
+            // TODO?
             InvalidTransaction::Call.into()
-
-            // match call {
-            //     Call::submit_number_unsigned { number: _number } => {
-            //         valid_tx(b"submit_number_unsigned".to_vec())
-            //     }
-            //     Call::submit_number_unsigned_with_signed_payload {
-            //         ref payload,
-            //         ref signature,
-            //     } => {
-            //         if !SignedPayload::<T>::verify::<T::AuthorityId>(payload, signature.clone()) {
-            //             return InvalidTransaction::BadProof.into();
-            //         }
-            //         valid_tx(b"submit_number_unsigned_with_signed_payload".to_vec())
-            //     }
-            //     _ => InvalidTransaction::Call.into(),
-            // }
         }
     }
 
@@ -329,45 +271,71 @@ pub mod pallet {
     }
 
     impl<T: Config> Pallet<T> {
+        fn derived_key() -> Vec<u8> {
+            // TODO re-add block_number?
+            let block_number = T::BlockNumber::default();
+            block_number.using_encoded(|encoded_bn| {
+                ONCHAIN_TX_KEY
+                    .clone()
+                    .into_iter()
+                    .chain(b"/".into_iter())
+                    .chain(encoded_bn)
+                    .copied()
+                    .collect::<Vec<u8>>()
+            })
+        }
+    }
+
+    #[derive(Debug, Deserialize, Encode, Decode, Default)]
+    struct IndexingData {
+        skcd_ipfs_hash: Vec<u8>,
+        block_number: u32,
+    }
+
+    impl IndexingData {
+        fn empty() -> IndexingData {
+            IndexingData {
+                skcd_ipfs_hash: Vec::<u8>::new(),
+                block_number: 0,
+            }
+        }
+    }
+
+    impl<T: Config> Pallet<T> {
         /// Append a new number to the tail of the list, removing an element from the head if reaching
         ///   the bounded length.
         fn append_or_replace_skcd_hash(skcd_cid: Vec<u8>) {
-            SkcdIpfsCids::<T>::mutate(|skcd_cids| {
-                if skcd_cids.len() == NUM_VEC_LEN {
-                    let _ = skcd_cids.pop_front();
-                }
-                skcd_cids.push_back(skcd_cid);
-                log::info!("[ocw-garble] SkcdIpfsCids vector: {:?}", skcd_cids);
-            });
-
-            // TODO refacto: move call to Self::deposit_event in here
+            let key = Self::derived_key();
+            let data = IndexingData {
+                skcd_ipfs_hash: skcd_cid,
+                block_number: 1,
+            };
+            sp_io::offchain_index::set(&key, &data.encode());
         }
 
         /// Check if we have fetched the data before. If yes, we can use the cached version
         ///   stored in off-chain worker storage `storage`. If not, we fetch the remote info and
         ///   write the info into the storage for future retrieval.
-        fn fetch_remote_info() -> Result<(), Error<T>> {
-            // // Create a reference to Local Storage value.
-            // // Since the local storage is common for all offchain workers, it's a good practice
-            // // to prepend our entry with the pallet name.
-            // let s_info = StorageValueRef::persistent(b"offchain-demo::hn-info");
+        fn fetch_remote_info(block_number: T::BlockNumber) -> Result<(), Error<T>> {
+            // Reading back the off-chain indexing value. It is exactly the same as reading from
+            // ocw local storage.
+            //
+            // IMPORTANT: writing using eg StorageValue(mutate,set,kill,take) works but DOES NOTHING
+            // During the next call, the old value is there!
+            // So we MUST use StorageValueRef/LocalStorage to write.
+            let key = Self::derived_key();
+            let oci_mem = StorageValueRef::persistent(&key);
 
-            // // Local storage is persisted and shared between runs of the offchain workers,
-            // // offchain workers may run concurrently. We can use the `mutate` function to
-            // // write a storage entry in an atomic fashion.
-            // //
-            // // With a similar API as `StorageValue` with the variables `get`, `set`, `mutate`.
-            // // We will likely want to use `mutate` to access
-            // // the storage comprehensively.
-            // //
-            // if let Ok(Some(info)) = s_info.get::<HackerNewsInfo>() {
-            //     // hn-info has already been fetched. Return early.
-            //     log::info!("[ocw-garble] cached hn-info: {:?}", info);
-            //     return Ok(());
-            // }
+            let indexing_data = oci_mem
+                .get::<IndexingData>()
+                .unwrap_or(Some(IndexingData::empty()))
+                .unwrap_or(IndexingData::empty());
 
-            let skcd_cids_to_process = <SkcdIpfsCids<T>>::get();
-            if skcd_cids_to_process.is_empty() {
+            let to_process_skcd_cid = indexing_data.skcd_ipfs_hash;
+            let to_process_block_number = indexing_data.block_number;
+
+            // TODO proper job queue; or at least proper CHECK
+            if to_process_skcd_cid.is_empty() || to_process_block_number == 0 {
                 log::info!("[ocw-garble] nothing to do, returning...");
                 return Ok(());
             }
@@ -382,19 +350,23 @@ pub mod pallet {
             //   4) `with_block_and_time_deadline` - lock with custom time and block expiration
             // Here we choose the most custom one for demonstration purpose.
             let mut lock = StorageLock::<BlockAndTime<Self>>::with_block_and_time_deadline(
-                b"offchain-demo::lock",
+                LOCK_KEY,
                 LOCK_BLOCK_EXPIRATION,
                 Duration::from_millis(LOCK_TIMEOUT_EXPIRATION),
             );
 
-            // get the first one from the list to be processed
-            let skcd_cid = SkcdIpfsCids::<T>::mutate(|skcd_cids| skcd_cids.pop_front());
-            let skcd_cid = skcd_cid.expect("skcd_cid.expect");
-
             // We try to acquire the lock here. If failed, we know the `fetch_n_parse` part inside is being
             //   executed by previous run of ocw, so the function just returns.
             if let Ok(_guard) = lock.try_lock() {
-                match Self::fetch_n_parse(skcd_cid) {
+                /// NOTE: remove the task from the "job queue" wether it worked or not
+                /// TODO better? But in this case we should only retry in case of "remote error"
+                /// and NOT retry if eg the given hash is not a valid IPFS hash
+                ///
+                /// DO NOT use "sp_io::offchain_index::set"!
+                /// We MUST use "StorageValueRef::persistent" else the value is not updated??
+                oci_mem.set(&IndexingData::empty());
+
+                match Self::fetch_n_parse(&to_process_skcd_cid) {
                     Ok(info) => {
                         // TODO return result via tx
                         // s_info.set(&info);
@@ -409,7 +381,7 @@ pub mod pallet {
         }
 
         /// Fetch from remote and deserialize the JSON to a struct
-        fn fetch_n_parse(skcd_cid: Vec<u8>) -> Result<Vec<u8>, Error<T>> {
+        fn fetch_n_parse(skcd_cid: &Vec<u8>) -> Result<Vec<u8>, Error<T>> {
             let resp_bytes = Self::fetch_from_remote(skcd_cid).map_err(|e| {
                 log::error!("[ocw-garble] fetch_from_remote error: {:?}", e);
                 <Error<T>>::HttpFetchingError
@@ -425,7 +397,7 @@ pub mod pallet {
 
         /// This function uses the `offchain::http` API to query the remote endpoint information,
         ///   and returns the JSON response as vector of bytes.
-        fn fetch_from_remote(skcd_cid: Vec<u8>) -> Result<Vec<u8>, http::Error> {
+        fn fetch_from_remote(skcd_cid: &Vec<u8>) -> Result<Vec<u8>, http::Error> {
             // We want to keep the offchain worker execution time reasonable, so we set a hard-coded
             // deadline to 2s to complete the external call.
             // You can also wait idefinitely for the response, however you may still get a timeout
@@ -504,86 +476,6 @@ pub mod pallet {
 
             Ok(reply.pgarbled_cid.bytes().collect())
         }
-
-        // fn offchain_signed_tx(block_number: T::BlockNumber) -> Result<(), Error<T>> {
-        //     // We retrieve a signer and check if it is valid.
-        //     //   Since this pallet only has one key in the keystore. We use `any_account()1 to
-        //     //   retrieve it. If there are multiple keys and we want to pinpoint it, `with_filter()` can be chained,
-        //     let signer = Signer::<T, T::AuthorityId>::any_account();
-
-        //     // Translating the current block number to number and submit it on-chain
-        //     let number: u64 = block_number.try_into().unwrap_or(0);
-
-        //     // `result` is in the type of `Option<(Account<T>, Result<(), ()>)>`. It is:
-        //     //   - `None`: no account is available for sending transaction
-        //     //   - `Some((account, Ok(())))`: transaction is successfully sent
-        //     //   - `Some((account, Err(())))`: error occured when sending the transaction
-        //     let result = signer.send_signed_transaction(|_acct|
-        // 		// This is the on-chain function
-        // 		Call::submit_number_signed { number });
-
-        //     // Display error if the signed tx fails.
-        //     if let Some((acc, res)) = result {
-        //         if res.is_err() {
-        //             log::error!("[ocw-garble] failure: offchain_signed_tx: tx sent: {:?}", acc.id);
-        //             return Err(<Error<T>>::OffchainSignedTxError);
-        //         }
-        //         // Transaction is sent successfully
-        //         return Ok(());
-        //     }
-
-        //     // The case of `None`: no account is available for sending
-        //     log::error!("[ocw-garble] No local account available");
-        //     Err(<Error<T>>::NoLocalAcctForSigning)
-        // }
-
-        // fn offchain_unsigned_tx(block_number: T::BlockNumber) -> Result<(), Error<T>> {
-        //     let number: u64 = block_number.try_into().unwrap_or(0);
-        //     let call = Call::submit_number_unsigned { number };
-
-        //     // `submit_unsigned_transaction` returns a type of `Result<(), ()>`
-        //     //   ref: https://substrate.dev/rustdocs/v2.0.0/frame_system/offchain/struct.SubmitTransaction.html#method.submit_unsigned_transaction
-        //     SubmitTransaction::<T, Call<T>>::submit_unsigned_transaction(call.into()).map_err(
-        //         |_| {
-        //             log::error!("[ocw-garble] Failed in offchain_unsigned_tx");
-        //             <Error<T>>::OffchainUnsignedTxError
-        //         },
-        //     )
-        // }
-
-        // fn offchain_unsigned_tx_signed_payload(
-        //     block_number: T::BlockNumber,
-        // ) -> Result<(), Error<T>> {
-        //     // Retrieve the signer to sign the payload
-        //     let signer = Signer::<T, T::AuthorityId>::any_account();
-
-        //     let number: u64 = block_number.try_into().unwrap_or(0);
-
-        //     // `send_unsigned_transaction` is returning a type of `Option<(Account<T>, Result<(), ()>)>`.
-        //     //   Similar to `send_signed_transaction`, they account for:
-        //     //   - `None`: no account is available for sending transaction
-        //     //   - `Some((account, Ok(())))`: transaction is successfully sent
-        //     //   - `Some((account, Err(())))`: error occured when sending the transaction
-        //     if let Some((_, res)) = signer.send_unsigned_transaction(
-        //         |acct| Payload {
-        //             number,
-        //             public: acct.public.clone(),
-        //         },
-        //         |payload, signature| Call::submit_number_unsigned_with_signed_payload {
-        //             payload,
-        //             signature,
-        //         },
-        //     ) {
-        //         return res.map_err(|_| {
-        //             log::error!("[ocw-garble] Failed in offchain_unsigned_tx_signed_payload");
-        //             <Error<T>>::OffchainUnsignedTxSignedPayloadError
-        //         });
-        //     }
-
-        //     // The case of `None`: no account is available for sending
-        //     log::error!("[ocw-garble] No local account available");
-        //     Err(<Error<T>>::NoLocalAcctForSigning)
-        // }
     }
 
     impl<T: Config> BlockNumberProvider for Pallet<T> {
@@ -601,7 +493,7 @@ pub mod pallet {
 // "tonic-web: Invalid byte 45, offset 0"
 // https://github.com/hyperium/tonic/blob/01e5be508051eebf19c233d48b57797a17331383/tonic-web/tests/integration/tests/grpc_web.rs#L93
 // also: https://github.com/grpc/grpc-web/issues/152
-fn encode_body2(skcd_cid: Vec<u8>) -> bytes::Bytes {
+fn encode_body2(skcd_cid: &Vec<u8>) -> bytes::Bytes {
     log::info!("[ocw-garble] encode_body2: {:x?}", skcd_cid);
 
     let skcd_cid_str = sp_std::str::from_utf8(&skcd_cid)

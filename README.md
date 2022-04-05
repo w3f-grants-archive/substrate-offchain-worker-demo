@@ -11,8 +11,10 @@ The purpose is to demonstrate what off-chain worker could do, and how one would 
 2. To run it, use Rust's native `cargo` command to build and launch the template node:
 
   ```sh
-  cargo run --release -- --dev --tmp
+  cargo run --release -- --dev --tmp --enable-offchain-indexing
   ```
+
+  IMPORTANT: you **MUST** use `--enable-offchain-indexing=1` else it will always do nothing and show "[ocw-garble] nothing to do, returning..." and "[ocw-circuits] nothing to do, returning..." in the logs
 
 3. To build it, the `cargo run` command will perform an initial build. Use the following command to
 build the node without launching it:
