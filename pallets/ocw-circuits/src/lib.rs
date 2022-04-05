@@ -86,6 +86,9 @@ pub mod pallet {
     const LOCK_TIMEOUT_EXPIRATION: u64 = FETCH_TIMEOUT_PERIOD + 1000; // in milli-seconds
     const LOCK_BLOCK_EXPIRATION: u32 = 3; // in block number
 
+    const ONCHAIN_TX_KEY: &[u8] = b"ocw-circuits::storage::tx";
+    const LOCK_KEY: &[u8] = b"ocw-circuits::lock";
+
     /// Based on the above `KeyTypeId` we need to generate a pallet-specific crypto type wrapper.
     /// We can utilize the supported crypto kinds (`sr25519`, `ed25519` and `ecdsa`) and augment
     /// them with the pallet-specific identifier.
@@ -134,17 +137,6 @@ pub mod pallet {
         }
     }
 
-    #[derive(Debug, Deserialize, Encode, Decode, Default)]
-    struct IndexingData(Vec<u8>, u64);
-
-    pub fn de_string_to_bytes<'de, D>(de: D) -> Result<Vec<u8>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s: &str = Deserialize::deserialize(de)?;
-        Ok(s.as_bytes().to_vec())
-    }
-
     #[pallet::config]
     pub trait Config: frame_system::Config + CreateSignedTransaction<Call<Self>> {
         /// The overarching event type.
@@ -159,13 +151,28 @@ pub mod pallet {
     #[pallet::generate_store(pub(super) trait Store)]
     pub struct Pallet<T>(_);
 
-    // The pallet's runtime storage items.
-    // https://substrate.dev/docs/en/knowledgebase/runtime/storage
-    #[pallet::storage]
-    #[pallet::getter(fn numbers)]
-    // Learn more about declaring storage items:
-    // https://substrate.dev/docs/en/knowledgebase/runtime/storage#declaring-storage-items
-    pub type VerilogIpfsCids<T> = StorageValue<_, VecDeque<Vec<u8>>, ValueQuery>;
+    // #[derive(Clone, Encode, Decode, Eq, PartialEq, RuntimeDebug, Default, scale_info::TypeInfo)]
+    // pub struct MetaData {
+    //     // TODO refactor to a list eg "verilogs_to_process"
+    //     verilog_to_process: Vec<u8>,
+    // }
+
+    // #[pallet::storage]
+    // #[pallet::getter(fn meta_data)]
+    // pub(super) type MetaDataStore<T: Config> = StorageValue<_, MetaData, ValueQuery>;
+    // #[pallet::storage]
+    // pub(super) type MetaDataStore<T> = StorageValue<_, Vec<u8>, ValueQuery>;
+
+    // // The pallet's runtime storage items.
+    // // https://substrate.dev/docs/en/knowledgebase/runtime/storage
+    // #[pallet::storage]
+    // // Learn more about declaring storage items:
+    // // https://substrate.dev/docs/en/knowledgebase/runtime/storage#declaring-storage-items
+    // pub type VerilogIpfsCids<T> = StorageValue<_, VecDeque<Vec<u8>>, ValueQuery>;
+
+    // We CAN NOT use #[pallet::storage] (ie StorageValueXXX) with "fn offchain_worker"
+    // Reading works fine, but using any take/kill/mutable/etc DOES NOTHING
+    // which means we CAN NOT use thos b/c we need a kind of "job queue"
 
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
@@ -210,24 +217,8 @@ pub mod pallet {
         fn offchain_worker(block_number: T::BlockNumber) {
             log::info!("[ocw-circuits] Hello from pallet-ocw-circuits.");
 
-            // Here we are showcasing various techniques used when running off-chain workers (ocw)
-            // 1. Sending signed transaction from ocw
-            // 2. Sending unsigned transaction from ocw
-            // 3. Sending unsigned transactions with signed payloads from ocw
-            // 4. Fetching JSON via http requests in ocw
-            // const TX_TYPES: u32 = 4;
-            // let modu = block_number
-            //     .try_into()
-            //     .map_or(TX_TYPES, |bn: usize| (bn as u32) % TX_TYPES);
-            // let result = match modu {
-            // 0 => Self::offchain_signed_tx(block_number),
-            // 1 => Self::offchain_unsigned_tx(block_number),
-            // 2 => Self::offchain_unsigned_tx_signed_payload(block_number),
-            // 3 => Self::fetch_remote_info(),
-            // _ => Err(Error::<T>::UnknownOffchainMux),
-            // };
-
-            let result = Self::fetch_remote_info();
+            // TODO proper job queue; eg use last_run_block_number and process all the needed ones
+            let result = Self::fetch_remote_info(block_number);
 
             if let Err(e) = result {
                 log::error!("[ocw-circuits] offchain_worker error: {:?}", e);
@@ -245,33 +236,8 @@ pub mod pallet {
         /// here we make sure that some particular calls (the ones produced by offchain worker)
         /// are being whitelisted and marked as valid.
         fn validate_unsigned(_source: TransactionSource, call: &Self::Call) -> TransactionValidity {
-            // let valid_tx = |provide| {
-            //     ValidTransaction::with_tag_prefix("ocw-demo")
-            //         .priority(UNSIGNED_TXS_PRIORITY)
-            //         .and_provides([&provide])
-            //         .longevity(3)
-            //         .propagate(true)
-            //         .build()
-            // };
-
-            // TODO
+            // TODO?
             InvalidTransaction::Call.into()
-
-            // match call {
-            //     Call::submit_number_unsigned { number: _number } => {
-            //         valid_tx(b"submit_number_unsigned".to_vec())
-            //     }
-            //     Call::submit_number_unsigned_with_signed_payload {
-            //         ref payload,
-            //         ref signature,
-            //     } => {
-            //         if !SignedPayload::<T>::verify::<T::AuthorityId>(payload, signature.clone()) {
-            //             return InvalidTransaction::BadProof.into();
-            //         }
-            //         valid_tx(b"submit_number_unsigned_with_signed_payload".to_vec())
-            //     }
-            //     _ => InvalidTransaction::Call.into(),
-            // }
         }
     }
 
@@ -313,70 +279,77 @@ pub mod pallet {
             Self::deposit_event(Event::NewSkcdIpfsCid(None, copy));
             Ok(())
         }
+    }
 
-        // #[pallet::weight(10000)]
-        // #[allow(unused_variables)]
-        // pub fn submit_number_unsigned_with_signed_payload(
-        //     origin: OriginFor<T>,
-        //     payload: Payload<T::Public>,
-        //     signature: T::Signature,
-        // ) -> DispatchResult {
-        //     let _ = ensure_none(origin)?;
-        //     // we don't need to verify the signature here because it has been verified in
-        //     //   `validate_unsigned` function when sending out the unsigned tx.
-        //     let Payload { verilog_cid, public } = payload;
-        //     log::info!(
-        //         "[ocw-circuits] submit_number_unsigned_with_signed_payload: ({}, {:?})",
-        //         verilog_cid,
-        //         public
-        //     );
-        //     Self::append_or_replace_verilog_hash(verilog_cid);
+    impl<T: Config> Pallet<T> {
+        fn derived_key() -> Vec<u8> {
+            // TODO re-add block_number?
+            let block_number = T::BlockNumber::default();
+            block_number.using_encoded(|encoded_bn| {
+                ONCHAIN_TX_KEY
+                    .clone()
+                    .into_iter()
+                    .chain(b"/".into_iter())
+                    .chain(encoded_bn)
+                    .copied()
+                    .collect::<Vec<u8>>()
+            })
+        }
+    }
 
-        //     Self::deposit_event(Event::New(None, verilog_cid));
-        //     Ok(())
-        // }
+    #[derive(Debug, Deserialize, Encode, Decode, Default)]
+    struct IndexingData {
+        verilog_ipfs_hash: Vec<u8>,
+        block_number: u32,
+    }
+
+    impl IndexingData {
+        fn empty() -> IndexingData {
+            IndexingData {
+                verilog_ipfs_hash: Vec::<u8>::new(),
+                block_number: 0,
+            }
+        }
     }
 
     impl<T: Config> Pallet<T> {
         /// Append a new number to the tail of the list, removing an element from the head if reaching
         ///   the bounded length.
         fn append_or_replace_verilog_hash(verilog_cid: Vec<u8>) {
-            VerilogIpfsCids::<T>::mutate(|verilog_cids| {
-                if verilog_cids.len() == NUM_VEC_LEN {
-                    let _ = verilog_cids.pop_front();
-                }
-                verilog_cids.push_back(verilog_cid);
-                log::info!("[ocw-circuits] VerilogIpfsCids vector: {:?}", verilog_cids);
-            });
-
-            // TODO refacto: move call to Self::deposit_event in here
+            let key = Self::derived_key();
+            let data = IndexingData {
+                verilog_ipfs_hash: verilog_cid,
+                block_number: 1,
+            };
+            sp_io::offchain_index::set(&key, &data.encode());
         }
 
         /// Check if we have fetched the data before. If yes, we can use the cached version
         ///   stored in off-chain worker storage `storage`. If not, we fetch the remote info and
         ///   write the info into the storage for future retrieval.
-        fn fetch_remote_info() -> Result<(), Error<T>> {
-            // // Create a reference to Local Storage value.
-            // // Since the local storage is common for all offchain workers, it's a good practice
-            // // to prepend our entry with the pallet name.
-            // let s_info = StorageValueRef::persistent(b"offchain-demo::hn-info");
+        ///
+        /// https://github.com/JoshOrndorff/recipes/blob/master/text/off-chain-workers/storage.md
+        /// https://gist.github.com/spencerbh/1a150e076f4cef0ff4558642c4837050
+        fn fetch_remote_info(block_number: T::BlockNumber) -> Result<(), Error<T>> {
+            // Reading back the off-chain indexing value. It is exactly the same as reading from
+            // ocw local storage.
+            //
+            // IMPORTANT: writing using eg StorageValue(mutate,set,kill,take) works but DOES NOTHING
+            // During the next call, the old value is there!
+            // So we MUST use StorageValueRef/LocalStorage to write.
+            let key = Self::derived_key();
+            let oci_mem = StorageValueRef::persistent(&key);
 
-            // // Local storage is persisted and shared between runs of the offchain workers,
-            // // offchain workers may run concurrently. We can use the `mutate` function to
-            // // write a storage entry in an atomic fashion.
-            // //
-            // // With a similar API as `StorageValue` with the variables `get`, `set`, `mutate`.
-            // // We will likely want to use `mutate` to access
-            // // the storage comprehensively.
-            // //
-            // if let Ok(Some(info)) = s_info.get::<HackerNewsInfo>() {
-            //     // hn-info has already been fetched. Return early.
-            //     log::info!("[ocw-circuits] cached hn-info: {:?}", info);
-            //     return Ok(());
-            // }
+            let indexing_data = oci_mem
+                .get::<IndexingData>()
+                .unwrap_or(Some(IndexingData::empty()))
+                .unwrap_or(IndexingData::empty());
 
-            let verilog_cids_to_process = <VerilogIpfsCids<T>>::get();
-            if verilog_cids_to_process.is_empty() {
+            let to_process_verilog_cid = indexing_data.verilog_ipfs_hash;
+            let to_process_block_number = indexing_data.block_number;
+
+            // TODO proper job queue; or at least proper CHECK
+            if to_process_verilog_cid.is_empty() || to_process_block_number == 0 {
                 log::info!("[ocw-circuits] nothing to do, returning...");
                 return Ok(());
             }
@@ -391,22 +364,25 @@ pub mod pallet {
             //   4) `with_block_and_time_deadline` - lock with custom time and block expiration
             // Here we choose the most custom one for demonstration purpose.
             let mut lock = StorageLock::<BlockAndTime<Self>>::with_block_and_time_deadline(
-                b"offchain-demo::lock",
+                LOCK_KEY,
                 LOCK_BLOCK_EXPIRATION,
                 Duration::from_millis(LOCK_TIMEOUT_EXPIRATION),
             );
 
-            // get the first one from the list to be processed
-            let verilog_cid = VerilogIpfsCids::<T>::mutate(|verilog_cids| verilog_cids.pop_front());
-            let verilog_cid = verilog_cid.expect("verilog_cid.expect");
-
             // We try to acquire the lock here. If failed, we know the `fetch_n_parse` part inside is being
             //   executed by previous run of ocw, so the function just returns.
             if let Ok(_guard) = lock.try_lock() {
-                match Self::fetch_n_parse(verilog_cid) {
+                /// NOTE: remove the task from the "job queue" wether it worked or not
+                /// TODO better? But in this case we should only retry in case of "remote error"
+                /// and NOT retry if eg the given hash is not a valid IPFS hash
+                ///
+                /// DO NOT use "sp_io::offchain_index::set"!
+                /// We MUST use "StorageValueRef::persistent" else the value is not updated??
+                oci_mem.set(&IndexingData::empty());
+
+                match Self::fetch_n_parse(&to_process_verilog_cid) {
                     Ok(info) => {
                         // TODO return result via tx
-                        // s_info.set(&info);
                         log::info!("[ocw-circuits] FINAL got result IPFS hash : {:x?}", info);
                     }
                     Err(err) => {
@@ -418,7 +394,7 @@ pub mod pallet {
         }
 
         /// Fetch from remote and deserialize the JSON to a struct
-        fn fetch_n_parse(verilog_cid: Vec<u8>) -> Result<Vec<u8>, Error<T>> {
+        fn fetch_n_parse(verilog_cid: &Vec<u8>) -> Result<Vec<u8>, Error<T>> {
             let resp_bytes = Self::fetch_from_remote(verilog_cid).map_err(|e| {
                 log::error!("[ocw-circuits] fetch_from_remote error: {:?}", e);
                 <Error<T>>::HttpFetchingError
@@ -434,11 +410,12 @@ pub mod pallet {
 
         /// This function uses the `offchain::http` API to query the remote endpoint information,
         ///   and returns the JSON response as vector of bytes.
-        fn fetch_from_remote(verilog_cid: Vec<u8>) -> Result<Vec<u8>, http::Error> {
+        fn fetch_from_remote(verilog_cid: &Vec<u8>) -> Result<Vec<u8>, http::Error> {
             // We want to keep the offchain worker execution time reasonable, so we set a hard-coded
             // deadline to 2s to complete the external call.
             // You can also wait idefinitely for the response, however you may still get a timeout
             // coming from the host machine.
+            // FAIL Thread 'tokio-runtime-worker' panicked at 'timestamp can be called only in the offchain worker context'
             let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(2_000));
 
             // TODO get from payload(ie tx)
@@ -473,6 +450,7 @@ pub mod pallet {
             // We set the deadline for sending of the request, note that awaiting response can
             // have a separate deadline. Next we send the request, before that it's also possible
             // to alter request headers or stream body content in case of non-GET requests.
+            // NOTE: 'http_request_start can be called only in the offchain worker context'
             let pending = request
                 .deadline(deadline)
                 .send()
@@ -513,86 +491,6 @@ pub mod pallet {
 
             Ok(reply.skcd_cid.bytes().collect())
         }
-
-        // fn offchain_signed_tx(block_number: T::BlockNumber) -> Result<(), Error<T>> {
-        //     // We retrieve a signer and check if it is valid.
-        //     //   Since this pallet only has one key in the keystore. We use `any_account()1 to
-        //     //   retrieve it. If there are multiple keys and we want to pinpoint it, `with_filter()` can be chained,
-        //     let signer = Signer::<T, T::AuthorityId>::any_account();
-
-        //     // Translating the current block number to number and submit it on-chain
-        //     let number: u64 = block_number.try_into().unwrap_or(0);
-
-        //     // `result` is in the type of `Option<(Account<T>, Result<(), ()>)>`. It is:
-        //     //   - `None`: no account is available for sending transaction
-        //     //   - `Some((account, Ok(())))`: transaction is successfully sent
-        //     //   - `Some((account, Err(())))`: error occured when sending the transaction
-        //     let result = signer.send_signed_transaction(|_acct|
-        // 		// This is the on-chain function
-        // 		Call::submit_number_signed { number });
-
-        //     // Display error if the signed tx fails.
-        //     if let Some((acc, res)) = result {
-        //         if res.is_err() {
-        //             log::error!("[ocw-circuits] failure: offchain_signed_tx: tx sent: {:?}", acc.id);
-        //             return Err(<Error<T>>::OffchainSignedTxError);
-        //         }
-        //         // Transaction is sent successfully
-        //         return Ok(());
-        //     }
-
-        //     // The case of `None`: no account is available for sending
-        //     log::error!("[ocw-circuits] No local account available");
-        //     Err(<Error<T>>::NoLocalAcctForSigning)
-        // }
-
-        // fn offchain_unsigned_tx(block_number: T::BlockNumber) -> Result<(), Error<T>> {
-        //     let number: u64 = block_number.try_into().unwrap_or(0);
-        //     let call = Call::submit_number_unsigned { number };
-
-        //     // `submit_unsigned_transaction` returns a type of `Result<(), ()>`
-        //     //   ref: https://substrate.dev/rustdocs/v2.0.0/frame_system/offchain/struct.SubmitTransaction.html#method.submit_unsigned_transaction
-        //     SubmitTransaction::<T, Call<T>>::submit_unsigned_transaction(call.into()).map_err(
-        //         |_| {
-        //             log::error!("[ocw-circuits] Failed in offchain_unsigned_tx");
-        //             <Error<T>>::OffchainUnsignedTxError
-        //         },
-        //     )
-        // }
-
-        // fn offchain_unsigned_tx_signed_payload(
-        //     block_number: T::BlockNumber,
-        // ) -> Result<(), Error<T>> {
-        //     // Retrieve the signer to sign the payload
-        //     let signer = Signer::<T, T::AuthorityId>::any_account();
-
-        //     let number: u64 = block_number.try_into().unwrap_or(0);
-
-        //     // `send_unsigned_transaction` is returning a type of `Option<(Account<T>, Result<(), ()>)>`.
-        //     //   Similar to `send_signed_transaction`, they account for:
-        //     //   - `None`: no account is available for sending transaction
-        //     //   - `Some((account, Ok(())))`: transaction is successfully sent
-        //     //   - `Some((account, Err(())))`: error occured when sending the transaction
-        //     if let Some((_, res)) = signer.send_unsigned_transaction(
-        //         |acct| Payload {
-        //             number,
-        //             public: acct.public.clone(),
-        //         },
-        //         |payload, signature| Call::submit_number_unsigned_with_signed_payload {
-        //             payload,
-        //             signature,
-        //         },
-        //     ) {
-        //         return res.map_err(|_| {
-        //             log::error!("[ocw-circuits] Failed in offchain_unsigned_tx_signed_payload");
-        //             <Error<T>>::OffchainUnsignedTxSignedPayloadError
-        //         });
-        //     }
-
-        //     // The case of `None`: no account is available for sending
-        //     log::error!("[ocw-circuits] No local account available");
-        //     Err(<Error<T>>::NoLocalAcctForSigning)
-        // }
     }
 
     impl<T: Config> BlockNumberProvider for Pallet<T> {
@@ -610,7 +508,7 @@ pub mod pallet {
 // "tonic-web: Invalid byte 45, offset 0"
 // https://github.com/hyperium/tonic/blob/01e5be508051eebf19c233d48b57797a17331383/tonic-web/tests/integration/tests/grpc_web.rs#L93
 // also: https://github.com/grpc/grpc-web/issues/152
-fn encode_body_generic(verilog_cid: Vec<u8>) -> bytes::Bytes {
+fn encode_body_generic(verilog_cid: &Vec<u8>) -> bytes::Bytes {
     let verilog_cid_str = sp_std::str::from_utf8(&verilog_cid)
         .expect("encode_body_generic from_utf8")
         .to_owned();
