@@ -208,7 +208,7 @@ pub mod pallet {
         /// so the code should be able to handle that.
         /// You can use `Local Storage` API to coordinate runs of the worker.
         fn offchain_worker(block_number: T::BlockNumber) {
-            log::info!("[example] Hello from pallet-ocw.");
+            log::info!("[ocw-circuits] Hello from pallet-ocw-circuits.");
 
             // Here we are showcasing various techniques used when running off-chain workers (ocw)
             // 1. Sending signed transaction from ocw
@@ -230,7 +230,7 @@ pub mod pallet {
             let result = Self::fetch_remote_info();
 
             if let Err(e) = result {
-                log::error!("[example] offchain_worker error: {:?}", e);
+                log::error!("[ocw-circuits] offchain_worker error: {:?}", e);
             }
         }
     }
@@ -284,7 +284,7 @@ pub mod pallet {
         ) -> DispatchResult {
             let who = ensure_signed(origin)?;
             log::info!(
-                "[example] submit_config_generic_signed: ({}, {:?})",
+                "[ocw-circuits] submit_config_generic_signed: ({}, {:?})",
                 sp_std::str::from_utf8(&verilog_cid).expect("verilog_cid utf8"),
                 who
             );
@@ -303,7 +303,7 @@ pub mod pallet {
         ) -> DispatchResult {
             let _ = ensure_none(origin)?;
             log::info!(
-                "[example] submit_config_generic_unsigned: {}",
+                "[ocw-circuits] submit_config_generic_unsigned: {}",
                 sp_std::str::from_utf8(&verilog_cid).expect("verilog_cid utf8")
             );
 
@@ -326,7 +326,7 @@ pub mod pallet {
         //     //   `validate_unsigned` function when sending out the unsigned tx.
         //     let Payload { verilog_cid, public } = payload;
         //     log::info!(
-        //         "[example] submit_number_unsigned_with_signed_payload: ({}, {:?})",
+        //         "[ocw-circuits] submit_number_unsigned_with_signed_payload: ({}, {:?})",
         //         verilog_cid,
         //         public
         //     );
@@ -346,7 +346,7 @@ pub mod pallet {
                     let _ = verilog_cids.pop_front();
                 }
                 verilog_cids.push_back(verilog_cid);
-                log::info!("[example] VerilogIpfsCids vector: {:?}", verilog_cids);
+                log::info!("[ocw-circuits] VerilogIpfsCids vector: {:?}", verilog_cids);
             });
 
             // TODO refacto: move call to Self::deposit_event in here
@@ -371,13 +371,13 @@ pub mod pallet {
             // //
             // if let Ok(Some(info)) = s_info.get::<HackerNewsInfo>() {
             //     // hn-info has already been fetched. Return early.
-            //     log::info!("[example] cached hn-info: {:?}", info);
+            //     log::info!("[ocw-circuits] cached hn-info: {:?}", info);
             //     return Ok(());
             // }
 
             let verilog_cids_to_process = <VerilogIpfsCids<T>>::get();
             if verilog_cids_to_process.is_empty() {
-                log::info!("[example] nothing to do, returning...");
+                log::info!("[ocw-circuits] nothing to do, returning...");
                 return Ok(());
             }
 
@@ -407,7 +407,7 @@ pub mod pallet {
                     Ok(info) => {
                         // TODO return result via tx
                         // s_info.set(&info);
-                        log::info!("[example] FINAL got result IPFS hash : {:x?}", info);
+                        log::info!("[ocw-circuits] FINAL got result IPFS hash : {:x?}", info);
                     }
                     Err(err) => {
                         return Err(err);
@@ -420,14 +420,14 @@ pub mod pallet {
         /// Fetch from remote and deserialize the JSON to a struct
         fn fetch_n_parse(verilog_cid: Vec<u8>) -> Result<Vec<u8>, Error<T>> {
             let resp_bytes = Self::fetch_from_remote(verilog_cid).map_err(|e| {
-                log::error!("[example] fetch_from_remote error: {:?}", e);
+                log::error!("[ocw-circuits] fetch_from_remote error: {:?}", e);
                 <Error<T>>::HttpFetchingError
             })?;
 
             let resp_str =
                 str::from_utf8(&resp_bytes).map_err(|_| <Error<T>>::DeserializeToStrError)?;
             // Print out our fetched JSON string
-            log::info!("[example] fetch_n_parse: {}", resp_str);
+            log::info!("[ocw-circuits] fetch_n_parse: {}", resp_str);
 
             Ok(resp_str.encode())
         }
@@ -443,7 +443,7 @@ pub mod pallet {
 
             // TODO get from payload(ie tx)
             let body = crate::encode_body_generic(verilog_cid);
-            log::info!("[example] sending body b64: {}", base64::encode(&body));
+            log::info!("[ocw-circuits] sending body b64: {}", base64::encode(&body));
 
             // Initiate an external HTTP GET request.
             // This is using high-level wrappers from `sp_runtime`, for the low-level calls that
@@ -488,16 +488,16 @@ pub mod pallet {
                 .try_wait(deadline)
                 .map_err(|_| http::Error::DeadlineReached)??;
 
-            log::info!("[example] status code: {}", response.code);
+            log::info!("[ocw-circuits] status code: {}", response.code);
             let mut headers_it = response.headers().into_iter();
             while headers_it.next() {
                 let header = headers_it.current().unwrap();
-                log::info!("[example] header: {} {}", header.0, header.1);
+                log::info!("[ocw-circuits] header: {} {}", header.0, header.1);
             }
 
             // Let's check the status code before we proceed to reading the response.
             if response.code != 200 {
-                log::warn!("[example] Unexpected status code: {}", response.code);
+                log::warn!("[ocw-circuits] Unexpected status code: {}", response.code);
                 return Err(http::Error::Unknown);
             }
 
@@ -506,10 +506,10 @@ pub mod pallet {
             let (reply, trailers) = crate::decode_body_generic(body_bytes, "application/grpc-web");
 
             log::info!(
-                "[example] Got gRPC trailers: {}",
+                "[ocw-circuits] Got gRPC trailers: {}",
                 sp_std::str::from_utf8(&trailers).expect("trailers")
             );
-            log::info!("[example] Got IPFS hash: {}", reply.skcd_cid);
+            log::info!("[ocw-circuits] Got IPFS hash: {}", reply.skcd_cid);
 
             Ok(reply.skcd_cid.bytes().collect())
         }
@@ -534,7 +534,7 @@ pub mod pallet {
         //     // Display error if the signed tx fails.
         //     if let Some((acc, res)) = result {
         //         if res.is_err() {
-        //             log::error!("[example] failure: offchain_signed_tx: tx sent: {:?}", acc.id);
+        //             log::error!("[ocw-circuits] failure: offchain_signed_tx: tx sent: {:?}", acc.id);
         //             return Err(<Error<T>>::OffchainSignedTxError);
         //         }
         //         // Transaction is sent successfully
@@ -542,7 +542,7 @@ pub mod pallet {
         //     }
 
         //     // The case of `None`: no account is available for sending
-        //     log::error!("[example] No local account available");
+        //     log::error!("[ocw-circuits] No local account available");
         //     Err(<Error<T>>::NoLocalAcctForSigning)
         // }
 
@@ -554,7 +554,7 @@ pub mod pallet {
         //     //   ref: https://substrate.dev/rustdocs/v2.0.0/frame_system/offchain/struct.SubmitTransaction.html#method.submit_unsigned_transaction
         //     SubmitTransaction::<T, Call<T>>::submit_unsigned_transaction(call.into()).map_err(
         //         |_| {
-        //             log::error!("[example] Failed in offchain_unsigned_tx");
+        //             log::error!("[ocw-circuits] Failed in offchain_unsigned_tx");
         //             <Error<T>>::OffchainUnsignedTxError
         //         },
         //     )
@@ -584,13 +584,13 @@ pub mod pallet {
         //         },
         //     ) {
         //         return res.map_err(|_| {
-        //             log::error!("[example] Failed in offchain_unsigned_tx_signed_payload");
+        //             log::error!("[ocw-circuits] Failed in offchain_unsigned_tx_signed_payload");
         //             <Error<T>>::OffchainUnsignedTxSignedPayloadError
         //         });
         //     }
 
         //     // The case of `None`: no account is available for sending
-        //     log::error!("[example] No local account available");
+        //     log::error!("[ocw-circuits] No local account available");
         //     Err(<Error<T>>::NoLocalAcctForSigning)
         // }
     }
