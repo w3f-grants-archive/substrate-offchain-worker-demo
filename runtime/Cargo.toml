@@ -89,6 +89,10 @@ git = 'https://github.com/paritytech/substrate.git'
 tag = 'monthly-2021-10'
 version = '4.0.0-dev'
 
+[dependencies.ocw-common]
+default-features = false
+path = '../ocw-common'
+
 [dependencies.pallet-ocw-circuits]
 default-features = false
 version = '4.0.0-dev'

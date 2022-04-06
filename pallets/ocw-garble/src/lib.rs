@@ -1,33 +1,5 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
-use bytes::Buf;
-use bytes::BufMut;
-// use codec::{Decode, Encode};
-use frame_support::traits::Get;
-use frame_system::{
-    self as system,
-    offchain::{
-        AppCrypto, CreateSignedTransaction, SendSignedTransaction, SendUnsignedTransaction,
-        SignedPayload, Signer, SigningTypes, SubmitTransaction,
-    },
-};
-use sp_core::{crypto::KeyTypeId, hexdisplay::AsBytesRef};
-use sp_runtime::{
-    offchain::{
-        http,
-        storage::{MutateStorageError, StorageRetrievalError, StorageValueRef},
-        Duration,
-    },
-    traits::Zero,
-    transaction_validity::{InvalidTransaction, TransactionValidity, ValidTransaction},
-    RuntimeDebug,
-};
-use sp_std::borrow::ToOwned;
-use sp_std::vec;
-use sp_std::vec::Vec;
-
-use prost::Message;
-
 mod interstellarpbapigarble {
     // include_bytes!(concat!(env!("OUT_DIR")), "/interstellarpbapigarble.rs");
     // include_bytes!(concat!(env!("OUT_DIR"), "/interstellarpbapigarble.rs"));
@@ -36,36 +8,34 @@ mod interstellarpbapigarble {
 
 pub use pallet::*;
 
+#[cfg(test)]
+mod tests;
+
 #[frame_support::pallet]
 pub mod pallet {
-    //! A demonstration of an offchain worker that sends onchain callbacks
     use codec::{Decode, Encode};
-    use core::convert::TryInto;
-    use frame_support::pallet_prelude::*;
-    use frame_system::{
-        offchain::{
-            AppCrypto, CreateSignedTransaction, SendSignedTransaction, SendUnsignedTransaction,
-            SignedPayload, Signer, SigningTypes, SubmitTransaction,
-        },
-        pallet_prelude::*,
+    use frame_support::pallet_prelude::{
+        DispatchResult, Hooks, IsType, TransactionSource, TransactionValidity, ValidateUnsigned,
     };
+    use frame_system::offchain::AppCrypto;
+    use frame_system::offchain::CreateSignedTransaction;
+    use frame_system::offchain::SignedPayload;
+    use frame_system::offchain::SigningTypes;
+    use frame_system::pallet_prelude::BlockNumberFor;
+    use frame_system::pallet_prelude::OriginFor;
+    use frame_system::{ensure_none, ensure_signed};
+    use serde::Deserialize;
     use sp_core::crypto::KeyTypeId;
-    use sp_runtime::{
-        offchain::{
-            http,
-            storage::StorageValueRef,
-            storage_lock::{BlockAndTime, StorageLock},
-            Duration,
-        },
-        traits::BlockNumberProvider,
-        transaction_validity::{
-            InvalidTransaction, TransactionSource, TransactionValidity, ValidTransaction,
-        },
-        RuntimeDebug,
-    };
-    use sp_std::{collections::vec_deque::VecDeque, prelude::*, str};
-
-    use serde::{Deserialize, Deserializer};
+    use sp_core::offchain::Duration;
+    use sp_runtime::offchain::storage::StorageValueRef;
+    use sp_runtime::offchain::storage_lock::BlockAndTime;
+    use sp_runtime::offchain::storage_lock::StorageLock;
+    use sp_runtime::traits::BlockNumberProvider;
+    use sp_runtime::transaction_validity::InvalidTransaction;
+    use sp_runtime::RuntimeDebug;
+    use sp_std::borrow::ToOwned;
+    use sp_std::str;
+    use sp_std::vec::Vec;
 
     /// Defines application identifier for crypto keys of this module.
     ///
@@ -74,10 +44,7 @@ pub mod pallet {
     /// When an offchain worker is signing transactions it's going to request keys from type
     /// `KeyTypeId` via the keystore to sign the transaction.
     /// The keys can be inserted manually via RPC (see `author_insertKey`).
-    pub const KEY_TYPE: KeyTypeId = KeyTypeId(*b"demo");
-    const NUM_VEC_LEN: usize = 10;
-    /// The type to sign and send transactions.
-    const UNSIGNED_TXS_PRIORITY: u64 = 100;
+    pub const KEY_TYPE: KeyTypeId = KeyTypeId(*b"garb");
 
     const FETCH_TIMEOUT_PERIOD: u64 = 3000; // in milli-seconds
     const LOCK_TIMEOUT_EXPIRATION: u64 = FETCH_TIMEOUT_PERIOD + 1000; // in milli-seconds
@@ -85,6 +52,10 @@ pub mod pallet {
 
     const ONCHAIN_TX_KEY: &[u8] = b"ocw-garble::storage::tx";
     const LOCK_KEY: &[u8] = b"ocw-garble::lock";
+    const API_ENDPOINT_GARBLE_URL: &str =
+        "http://127.0.0.1:3001/interstellarpbapigarble.GarbleApi/GarbleIpfs";
+    const API_ENDPOINT_GARBLE_STRIP_URL: &str =
+        "http://127.0.0.1:3001/interstellarpbapigarble.GarbleApi/GarbleAndStripIpfs";
 
     /// Based on the above `KeyTypeId` we need to generate a pallet-specific crypto type wrapper.
     /// We can utilize the supported crypto kinds (`sr25519`, `ed25519` and `ecdsa`) and augment
@@ -191,7 +162,7 @@ pub mod pallet {
         fn offchain_worker(block_number: T::BlockNumber) {
             log::info!("[ocw-garble] Hello from pallet-ocw-garble.");
 
-            let result = Self::fetch_remote_info(block_number);
+            let result = Self::process_if_needed(block_number);
 
             if let Err(e) = result {
                 log::error!("[ocw-garble] offchain_worker error: {:?}", e);
@@ -208,7 +179,10 @@ pub mod pallet {
         /// By default unsigned transactions are disallowed, but implementing the validator
         /// here we make sure that some particular calls (the ones produced by offchain worker)
         /// are being whitelisted and marked as valid.
-        fn validate_unsigned(_source: TransactionSource, call: &Self::Call) -> TransactionValidity {
+        fn validate_unsigned(
+            _source: TransactionSource,
+            _call: &Self::Call,
+        ) -> TransactionValidity {
             // TODO?
             InvalidTransaction::Call.into()
         }
@@ -246,28 +220,6 @@ pub mod pallet {
             Self::deposit_event(Event::NewSkcdIpfsCid(None, copy));
             Ok(())
         }
-
-        // #[pallet::weight(10000)]
-        // #[allow(unused_variables)]
-        // pub fn submit_number_unsigned_with_signed_payload(
-        //     origin: OriginFor<T>,
-        //     payload: Payload<T::Public>,
-        //     signature: T::Signature,
-        // ) -> DispatchResult {
-        //     let _ = ensure_none(origin)?;
-        //     // we don't need to verify the signature here because it has been verified in
-        //     //   `validate_unsigned` function when sending out the unsigned tx.
-        //     let Payload { skcd_cid, public } = payload;
-        //     log::info!(
-        //         "[ocw-garble] submit_number_unsigned_with_signed_payload: ({}, {:?})",
-        //         skcd_cid,
-        //         public
-        //     );
-        //     Self::append_or_replace_skcd_hash(skcd_cid);
-
-        //     Self::deposit_event(Event::New(None, skcd_cid));
-        //     Ok(())
-        // }
     }
 
     impl<T: Config> Pallet<T> {
@@ -316,7 +268,7 @@ pub mod pallet {
         /// Check if we have fetched the data before. If yes, we can use the cached version
         ///   stored in off-chain worker storage `storage`. If not, we fetch the remote info and
         ///   write the info into the storage for future retrieval.
-        fn fetch_remote_info(block_number: T::BlockNumber) -> Result<(), Error<T>> {
+        fn process_if_needed(_block_number: T::BlockNumber) -> Result<(), Error<T>> {
             // Reading back the off-chain indexing value. It is exactly the same as reading from
             // ocw local storage.
             //
@@ -358,15 +310,15 @@ pub mod pallet {
             // We try to acquire the lock here. If failed, we know the `fetch_n_parse` part inside is being
             //   executed by previous run of ocw, so the function just returns.
             if let Ok(_guard) = lock.try_lock() {
-                /// NOTE: remove the task from the "job queue" wether it worked or not
-                /// TODO better? But in this case we should only retry in case of "remote error"
-                /// and NOT retry if eg the given hash is not a valid IPFS hash
-                ///
-                /// DO NOT use "sp_io::offchain_index::set"!
-                /// We MUST use "StorageValueRef::persistent" else the value is not updated??
+                // NOTE: remove the task from the "job queue" wether it worked or not
+                // TODO better? But in this case we should only retry in case of "remote error"
+                // and NOT retry if eg the given hash is not a valid IPFS hash
+                //
+                // DO NOT use "sp_io::offchain_index::set"!
+                // We MUST use "StorageValueRef::persistent" else the value is not updated??
                 oci_mem.set(&IndexingData::empty());
 
-                match Self::fetch_n_parse(&to_process_skcd_cid) {
+                match Self::call_grpc_garble(&to_process_skcd_cid) {
                     Ok(info) => {
                         // TODO return result via tx
                         // s_info.set(&info);
@@ -381,11 +333,21 @@ pub mod pallet {
         }
 
         /// Fetch from remote and deserialize the JSON to a struct
-        fn fetch_n_parse(skcd_cid: &Vec<u8>) -> Result<Vec<u8>, Error<T>> {
-            let resp_bytes = Self::fetch_from_remote(skcd_cid).map_err(|e| {
-                log::error!("[ocw-garble] fetch_from_remote error: {:?}", e);
-                <Error<T>>::HttpFetchingError
-            })?;
+        fn call_grpc_garble(skcd_cid: &Vec<u8>) -> Result<Vec<u8>, Error<T>> {
+            let skcd_cid_str = sp_std::str::from_utf8(&skcd_cid)
+                .expect("encode_body2 from_utf8")
+                .to_owned();
+            let input = crate::interstellarpbapigarble::GarbleIpfsRequest {
+                skcd_cid: skcd_cid_str,
+            };
+            let body_bytes = ocw_common::encode_body(input);
+
+            let resp_bytes =
+                ocw_common::fetch_from_remote_grpc_web(body_bytes, API_ENDPOINT_GARBLE_URL)
+                    .map_err(|e| {
+                        log::error!("[ocw-garble] fetch_from_remote error: {:?}", e);
+                        <Error<T>>::HttpFetchingError
+                    })?;
 
             let resp_str =
                 str::from_utf8(&resp_bytes).map_err(|_| <Error<T>>::DeserializeToStrError)?;
@@ -394,90 +356,9 @@ pub mod pallet {
 
             Ok(resp_str.encode())
         }
-
-        /// This function uses the `offchain::http` API to query the remote endpoint information,
-        ///   and returns the JSON response as vector of bytes.
-        fn fetch_from_remote(skcd_cid: &Vec<u8>) -> Result<Vec<u8>, http::Error> {
-            // We want to keep the offchain worker execution time reasonable, so we set a hard-coded
-            // deadline to 2s to complete the external call.
-            // You can also wait idefinitely for the response, however you may still get a timeout
-            // coming from the host machine.
-            let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(2_000));
-
-            // TODO get from payload(ie tx)
-            let body = crate::encode_body2(skcd_cid);
-            log::info!("[ocw-garble] sending body b64: {}", base64::encode(&body));
-
-            // Initiate an external HTTP GET request.
-            // This is using high-level wrappers from `sp_runtime`, for the low-level calls that
-            // you can find in `sp_io`. The API is trying to be similar to `reqwest`, but
-            // since we are running in a custom WASM execution environment we can't simply
-            // import the library here.
-            //
-            // cf https://github.com/hyperium/tonic/blob/master/tonic-web/tests/integration/tests/grpc_web.rs
-            // syntax = "proto3";
-            // package test;
-            // service Test {
-            //		rpc SomeRpc(Input) returns (Output);
-            // -> curl http://127.0.0.1:3000/test.Test/SomeRpc
-            //
-            // NOTE application/grpc-web == application/grpc-web+proto
-            //      application/grpc-web-text = base64
-            //
-            // eg:
-            // printf '\x00\x00\x00\x00\x05\x08\xe0\x01\x10\x60' | curl -skv -H "Content-Type: application/grpc-web+proto" -H "X-Grpc-Web: 1" -H "Accept: application/grpc-web-text+proto" -X POST --data-binary @- http://127.0.0.1:3000/interstellarpbapigarble.SkcdApi/GenerateSkcdDisplay
-            let request = http::Request::post(
-                "http://127.0.0.1:3001/interstellarpbapigarble.GarbleApi/GarbleIpfs",
-                vec![body],
-            )
-            .add_header("Content-Type", "application/grpc-web")
-            .add_header("X-Grpc-Web", "1");
-
-            // We set the deadline for sending of the request, note that awaiting response can
-            // have a separate deadline. Next we send the request, before that it's also possible
-            // to alter request headers or stream body content in case of non-GET requests.
-            let pending = request
-                .deadline(deadline)
-                .send()
-                .map_err(|_| http::Error::IoError)?;
-
-            // The request is already being processed by the host, we are free to do anything
-            // else in the worker (we can send multiple concurrent requests too).
-            // At some point however we probably want to check the response though,
-            // so we can block current thread and wait for it to finish.
-            // Note that since the request is being driven by the host, we don't have to wait
-            // for the request to have it complete, we will just not read the response.
-            let mut response = pending
-                .try_wait(deadline)
-                .map_err(|_| http::Error::DeadlineReached)??;
-
-            log::info!("[ocw-garble] status code: {}", response.code);
-            let mut headers_it = response.headers().into_iter();
-            while headers_it.next() {
-                let header = headers_it.current().unwrap();
-                log::info!("[ocw-garble] header: {} {}", header.0, header.1);
-            }
-
-            // Let's check the status code before we proceed to reading the response.
-            if response.code != 200 {
-                log::warn!("[ocw-garble] Unexpected status code: {}", response.code);
-                return Err(http::Error::Unknown);
-            }
-
-            // TODO handle like parse_price
-            let body_bytes = response.body().collect::<bytes::Bytes>();
-            let (reply, trailers) = crate::decode_body2(body_bytes, "application/grpc-web");
-
-            log::info!(
-                "[ocw-garble] Got gRPC trailers: {}",
-                sp_std::str::from_utf8(&trailers).expect("trailers")
-            );
-            log::info!("[ocw-garble] Got IPFS hash: {}", reply.pgarbled_cid);
-
-            Ok(reply.pgarbled_cid.bytes().collect())
-        }
     }
 
+    // needed for with_block_and_time_deadline()
     impl<T: Config> BlockNumberProvider for Pallet<T> {
         type BlockNumber = T::BlockNumber;
 
@@ -485,57 +366,4 @@ pub mod pallet {
             <frame_system::Pallet<T>>::block_number()
         }
     }
-}
-
-// we CAN NOT just send the raw encoded protobuf(eg using GarbleIpfsRequest{}.encode())
-// b/c that returns errors like
-// "protocol error: received message with invalid compression flag: 8 (valid flags are 0 and 1), while sending request"
-// "tonic-web: Invalid byte 45, offset 0"
-// https://github.com/hyperium/tonic/blob/01e5be508051eebf19c233d48b57797a17331383/tonic-web/tests/integration/tests/grpc_web.rs#L93
-// also: https://github.com/grpc/grpc-web/issues/152
-fn encode_body2(skcd_cid: &Vec<u8>) -> bytes::Bytes {
-    log::info!("[ocw-garble] encode_body2: {:x?}", skcd_cid);
-
-    let skcd_cid_str = sp_std::str::from_utf8(&skcd_cid)
-        .expect("encode_body2 from_utf8")
-        .to_owned();
-    let input = interstellarpbapigarble::GarbleIpfsRequest {
-        skcd_cid: skcd_cid_str,
-    };
-
-    let mut buf = bytes::BytesMut::with_capacity(1024);
-    buf.reserve(5);
-    unsafe {
-        buf.advance_mut(5);
-    }
-
-    input.encode(&mut buf).unwrap();
-
-    let len = buf.len() - 5;
-    {
-        let mut buf = &mut buf[..5];
-        buf.put_u8(0);
-        buf.put_u32(len as u32);
-    }
-
-    buf.split_to(len + 5).freeze()
-}
-
-fn decode_body2(
-    body_bytes: bytes::Bytes,
-    content_type: &str,
-) -> (interstellarpbapigarble::GarbleIpfsReply, bytes::Bytes) {
-    let mut body = body_bytes;
-
-    if content_type == "application/grpc-web-text+proto" {
-        body = base64::decode(body).unwrap().into()
-    }
-
-    body.advance(1);
-    let len = body.get_u32();
-    let msg = interstellarpbapigarble::GarbleIpfsReply::decode(&mut body.split_to(len as usize))
-        .expect("decode");
-    body.advance(5);
-
-    (msg, body)
 }

@@ -1473,7 +1473,7 @@ dependencies = [
  "linregress",
  "log",
  "parity-scale-codec",
- "paste 1.0.5",
+ "paste",
  "scale-info",
  "sp-api",
  "sp-io",
@@ -1549,7 +1549,7 @@ dependencies = [
  "log",
  "once_cell",
  "parity-scale-codec",
- "paste 1.0.5",
+ "paste",
  "scale-info",
  "serde",
  "smallvec",
@@ -3101,24 +3101,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "lite-json"
-version = "0.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0460d985423a026b4d9b828a7c6eed1bcf606f476322f3f9b507529686a61715"
-dependencies = [
- "lite-parser",
-]
-
-[[package]]
-name = "lite-parser"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c50092e40e0ccd1bf2015a10333fde0502ff95b832b0895dc1ca0d7ac6c52f6"
-dependencies = [
- "paste 0.1.18",
-]
-
-[[package]]
 name = "lock_api"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3575,6 +3557,7 @@ dependencies = [
  "frame-system-rpc-runtime-api",
  "hex-literal",
  "log",
+ "ocw-common",
  "pallet-aura",
  "pallet-balances",
  "pallet-grandpa",
@@ -3720,6 +3703,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ocw-common"
+version = "0.1.0"
+dependencies = [
+ "base64 0.13.0",
+ "bytes 1.1.0",
+ "log",
+ "prost 0.9.0",
+ "sp-io",
+ "sp-runtime",
+ "sp-std",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3825,12 +3821,10 @@ dependencies = [
 name = "pallet-ocw-circuits"
 version = "4.0.0-dev"
 dependencies = [
- "base64 0.13.0",
- "bytes 1.1.0",
  "frame-support",
  "frame-system",
- "lite-json",
  "log",
+ "ocw-common",
  "parity-scale-codec",
  "prost 0.9.0",
  "prost-build 0.9.0",
@@ -3849,11 +3843,10 @@ dependencies = [
 name = "pallet-ocw-garble"
 version = "1.0.0"
 dependencies = [
- "base64 0.13.0",
- "bytes 1.1.0",
  "frame-support",
  "frame-system",
  "log",
+ "ocw-common",
  "parity-scale-codec",
  "parking_lot 0.11.2",
  "prost 0.9.0",
@@ -4177,28 +4170,9 @@ dependencies = [
 
 [[package]]
 name = "paste"
-version = "0.1.18"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "45ca20c77d80be666aef2b45486da86238fabe33e38306bd3118fe4af33fa880"
-dependencies = [
- "paste-impl",
- "proc-macro-hack",
-]
-
-[[package]]
-name = "paste"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "acbf547ad0c65e31259204bd90935776d1c693cec2f4ff7abb7a1bbbd40dfe58"
-
-[[package]]
-name = "paste-impl"
-version = "0.1.18"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d95a7db200b97ef370c8e6de0088252f7e0dfff7d047a28528e47456c0fc98b6"
-dependencies = [
- "proc-macro-hack",
-]
 
 [[package]]
 name = "pbkdf2"
@@ -6165,7 +6139,7 @@ dependencies = [
  "approx",
  "num-complex",
  "num-traits",
- "paste 1.0.5",
+ "paste",
 ]
 
 [[package]]
@@ -6603,7 +6577,7 @@ dependencies = [
  "log",
  "parity-scale-codec",
  "parity-util-mem",
- "paste 1.0.5",
+ "paste",
  "rand 0.7.3",
  "scale-info",
  "serde",
@@ -7743,7 +7717,7 @@ dependencies = [
  "lazy_static",
  "libc",
  "log",
- "paste 1.0.5",
+ "paste",
  "psm",
  "region",
  "rustc-demangle",
