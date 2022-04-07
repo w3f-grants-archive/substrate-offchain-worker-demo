@@ -17,13 +17,13 @@ pub mod pallet {
     use frame_support::pallet_prelude::{
         DispatchResult, Hooks, IsType, TransactionSource, TransactionValidity, ValidateUnsigned,
     };
+    use frame_system::ensure_signed;
     use frame_system::offchain::AppCrypto;
     use frame_system::offchain::CreateSignedTransaction;
     use frame_system::offchain::SignedPayload;
     use frame_system::offchain::SigningTypes;
     use frame_system::pallet_prelude::BlockNumberFor;
     use frame_system::pallet_prelude::OriginFor;
-    use frame_system::{ensure_none, ensure_signed};
     use serde::Deserialize;
     use sp_core::crypto::KeyTypeId;
     use sp_core::offchain::Duration;
@@ -56,6 +56,8 @@ pub mod pallet {
         "http://127.0.0.1:3000/interstellarpbapicircuits.SkcdApi/GenerateSkcdGenericFromIPFS";
     const API_ENDPOINT_DISPLAY_URL: &str =
         "http://127.0.0.1:3000/interstellarpbapicircuits.SkcdApi/GenerateSkcdDisplay";
+    const DEFAULT_DISPLAY_WIDTH: u32 = 224;
+    const DEFAULT_DISPLAY_HEIGHT: u32 = 96;
 
     /// Based on the above `KeyTypeId` we need to generate a pallet-specific crypto type wrapper.
     /// We can utilize the supported crypto kinds (`sr25519`, `ed25519` and `ecdsa`) and augment
@@ -204,27 +206,28 @@ pub mod pallet {
             );
 
             let copy = verilog_cid.clone();
-            Self::append_or_replace_verilog_hash(verilog_cid);
+            Self::append_or_replace_verilog_hash(verilog_cid, GrpcCallKind::Generic);
 
             Self::deposit_event(Event::NewSkcdIpfsCid(Some(who), copy));
             Ok(())
         }
 
         #[pallet::weight(10000)]
-        pub fn submit_config_generic_unsigned(
+        pub fn submit_config_display_signed(
             origin: OriginFor<T>,
             verilog_cid: Vec<u8>,
         ) -> DispatchResult {
-            let _ = ensure_none(origin)?;
+            let who = ensure_signed(origin)?;
             log::info!(
-                "[ocw-circuits] submit_config_generic_unsigned: {}",
-                sp_std::str::from_utf8(&verilog_cid).expect("verilog_cid utf8")
+                "[ocw-circuits] submit_config_display_signed: ({}, {:?})",
+                sp_std::str::from_utf8(&verilog_cid).expect("verilog_cid utf8"),
+                who
             );
 
             let copy = verilog_cid.clone();
-            Self::append_or_replace_verilog_hash(verilog_cid);
+            Self::append_or_replace_verilog_hash(verilog_cid, GrpcCallKind::Display);
 
-            Self::deposit_event(Event::NewSkcdIpfsCid(None, copy));
+            Self::deposit_event(Event::NewSkcdIpfsCid(Some(who), copy));
             Ok(())
         }
     }
@@ -245,29 +248,34 @@ pub mod pallet {
         }
     }
 
+    #[derive(Debug, Deserialize, Encode, Decode)]
+    enum GrpcCallKind {
+        Generic,
+        Display,
+    }
+
+    impl Default for GrpcCallKind {
+        fn default() -> Self {
+            GrpcCallKind::Generic
+        }
+    }
+
     #[derive(Debug, Deserialize, Encode, Decode, Default)]
     struct IndexingData {
         verilog_ipfs_hash: Vec<u8>,
         block_number: u32,
-    }
-
-    impl IndexingData {
-        fn empty() -> IndexingData {
-            IndexingData {
-                verilog_ipfs_hash: Vec::<u8>::new(),
-                block_number: 0,
-            }
-        }
+        grpc_kind: GrpcCallKind,
     }
 
     impl<T: Config> Pallet<T> {
         /// Append a new number to the tail of the list, removing an element from the head if reaching
         ///   the bounded length.
-        fn append_or_replace_verilog_hash(verilog_cid: Vec<u8>) {
+        fn append_or_replace_verilog_hash(verilog_cid: Vec<u8>, grpc_kind: GrpcCallKind) {
             let key = Self::derived_key();
             let data = IndexingData {
                 verilog_ipfs_hash: verilog_cid,
                 block_number: 1,
+                grpc_kind: grpc_kind,
             };
             sp_io::offchain_index::set(&key, &data.encode());
         }
@@ -290,8 +298,8 @@ pub mod pallet {
 
             let indexing_data = oci_mem
                 .get::<IndexingData>()
-                .unwrap_or(Some(IndexingData::empty()))
-                .unwrap_or(IndexingData::empty());
+                .unwrap_or(Some(IndexingData::default()))
+                .unwrap_or(IndexingData::default());
 
             let to_process_verilog_cid = indexing_data.verilog_ipfs_hash;
             let to_process_block_number = indexing_data.block_number;
@@ -326,12 +334,17 @@ pub mod pallet {
                 //
                 // DO NOT use "sp_io::offchain_index::set"!
                 // We MUST use "StorageValueRef::persistent" else the value is not updated??
-                oci_mem.set(&IndexingData::empty());
+                oci_mem.set(&IndexingData::default());
 
                 match Self::call_grpc_generic(&to_process_verilog_cid) {
-                    Ok(info) => {
+                    Ok(result_ipfs_hash) => {
                         // TODO return result via tx
-                        log::info!("[ocw-circuits] FINAL got result IPFS hash : {:x?}", info);
+                        let result_ipfs_hash_str = str::from_utf8(&result_ipfs_hash)
+                            .map_err(|_| <Error<T>>::DeserializeToStrError)?;
+                        log::info!(
+                            "[ocw-circuits] FINAL got result IPFS hash : {:x?}",
+                            result_ipfs_hash_str
+                        );
                     }
                     Err(err) => {
                         return Err(err);
@@ -341,29 +354,52 @@ pub mod pallet {
             Ok(())
         }
 
-        /// Fetch from remote and deserialize the JSON to a struct
+        /// Call the GRPC endpoint API_ENDPOINT_GENERIC_URL, encoding the request as grpc-web, and decoding the response
+        ///
+        /// return: a IPFS hash
         fn call_grpc_generic(verilog_cid: &Vec<u8>) -> Result<Vec<u8>, Error<T>> {
             let verilog_cid_str = sp_std::str::from_utf8(&verilog_cid)
-                .expect("encode_body_generic from_utf8")
+                .expect("call_grpc_generic from_utf8")
                 .to_owned();
             let input = crate::interstellarpbapicircuits::SkcdGenericFromIpfsRequest {
                 verilog_cid: verilog_cid_str,
             };
             let body_bytes = ocw_common::encode_body(input);
 
-            let resp_bytes =
+            let (resp_bytes, resp_content_type) =
                 ocw_common::fetch_from_remote_grpc_web(body_bytes, API_ENDPOINT_GENERIC_URL)
                     .map_err(|e| {
-                        log::error!("[ocw-circuits] fetch_from_remote error: {:?}", e);
+                        log::error!("[ocw-circuits] call_grpc_generic error: {:?}", e);
                         <Error<T>>::HttpFetchingError
                     })?;
 
-            let resp_str =
-                str::from_utf8(&resp_bytes).map_err(|_| <Error<T>>::DeserializeToStrError)?;
-            // Print out our fetched JSON string
-            log::info!("[ocw-circuits] fetch_n_parse: {}", resp_str);
+            let (resp, trailers): (
+                crate::interstellarpbapicircuits::SkcdGenericFromIpfsReply,
+                _,
+            ) = ocw_common::decode_body(resp_bytes, resp_content_type);
+            Ok(resp.skcd_cid.bytes().collect())
+        }
 
-            Ok(resp_str.encode())
+        /// Call the GRPC endpoint API_ENDPOINT_GENERIC_URL, encoding the request as grpc-web, and decoding the response
+        ///
+        /// return: a IPFS hash
+        fn call_grpc_display() -> Result<Vec<u8>, Error<T>> {
+            let input = crate::interstellarpbapicircuits::SkcdDisplayRequest {
+                width: DEFAULT_DISPLAY_WIDTH,
+                height: DEFAULT_DISPLAY_HEIGHT,
+            };
+            let body_bytes = ocw_common::encode_body(input);
+
+            let (resp_bytes, resp_content_type) =
+                ocw_common::fetch_from_remote_grpc_web(body_bytes, API_ENDPOINT_DISPLAY_URL)
+                    .map_err(|e| {
+                        log::error!("[ocw-circuits] call_grpc_display error: {:?}", e);
+                        <Error<T>>::HttpFetchingError
+                    })?;
+
+            let (resp, trailers): (crate::interstellarpbapicircuits::SkcdDisplayReply, _) =
+                ocw_common::decode_body(resp_bytes, resp_content_type);
+            Ok(resp.skcd_cid.bytes().collect())
         }
     }
 
