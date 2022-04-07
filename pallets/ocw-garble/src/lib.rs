@@ -17,13 +17,13 @@ pub mod pallet {
     use frame_support::pallet_prelude::{
         DispatchResult, Hooks, IsType, TransactionSource, TransactionValidity, ValidateUnsigned,
     };
+    use frame_system::ensure_signed;
     use frame_system::offchain::AppCrypto;
     use frame_system::offchain::CreateSignedTransaction;
     use frame_system::offchain::SignedPayload;
     use frame_system::offchain::SigningTypes;
     use frame_system::pallet_prelude::BlockNumberFor;
     use frame_system::pallet_prelude::OriginFor;
-    use frame_system::{ensure_none, ensure_signed};
     use serde::Deserialize;
     use sp_core::crypto::KeyTypeId;
     use sp_core::offchain::Duration;
@@ -191,33 +191,39 @@ pub mod pallet {
     #[pallet::call]
     impl<T: Config> Pallet<T> {
         #[pallet::weight(10000)]
-        pub fn submit_skcd_cid_signed(origin: OriginFor<T>, skcd_cid: Vec<u8>) -> DispatchResult {
+        pub fn garble_standard_signed(origin: OriginFor<T>, skcd_cid: Vec<u8>) -> DispatchResult {
             let who = ensure_signed(origin)?;
             log::info!(
-                "[ocw-garble] submit_skcd_cid_signed: ({}, {:?})",
+                "[ocw-garble] garble_standard_signed: ({}, {:?})",
                 sp_std::str::from_utf8(&skcd_cid).expect("skcd_cid utf8"),
                 who
             );
 
             let copy = skcd_cid.clone();
-            Self::append_or_replace_skcd_hash(skcd_cid);
+            Self::append_or_replace_skcd_hash(skcd_cid, GrpcCallKind::GarbleStandard, None);
 
             Self::deposit_event(Event::NewSkcdIpfsCid(Some(who), copy));
             Ok(())
         }
 
         #[pallet::weight(10000)]
-        pub fn submit_skcd_cid_unsigned(origin: OriginFor<T>, skcd_cid: Vec<u8>) -> DispatchResult {
-            let _ = ensure_none(origin)?;
+        pub fn garble_and_strip_signed(
+            origin: OriginFor<T>,
+            skcd_cid: Vec<u8>,
+            tx_msg: Vec<u8>,
+        ) -> DispatchResult {
+            let who = ensure_signed(origin)?;
             log::info!(
-                "[ocw-garble] submit_skcd_cid_unsigned: {}",
-                sp_std::str::from_utf8(&skcd_cid).expect("skcd_cid utf8")
+                "[ocw-garble] garble_and_strip_signed: ({}, {:?}, {:?})",
+                sp_std::str::from_utf8(&skcd_cid).expect("skcd_cid utf8"),
+                sp_std::str::from_utf8(&tx_msg).expect("tx_msg utf8"),
+                who
             );
 
             let copy = skcd_cid.clone();
-            Self::append_or_replace_skcd_hash(skcd_cid);
+            Self::append_or_replace_skcd_hash(skcd_cid, GrpcCallKind::GarbleAndStrip, Some(tx_msg));
 
-            Self::deposit_event(Event::NewSkcdIpfsCid(None, copy));
+            Self::deposit_event(Event::NewSkcdIpfsCid(Some(who), copy));
             Ok(())
         }
     }
@@ -238,29 +244,41 @@ pub mod pallet {
         }
     }
 
+    #[derive(Debug, Deserialize, Encode, Decode)]
+    enum GrpcCallKind {
+        GarbleStandard,
+        GarbleAndStrip,
+    }
+
+    impl Default for GrpcCallKind {
+        fn default() -> Self {
+            GrpcCallKind::GarbleStandard
+        }
+    }
+
     #[derive(Debug, Deserialize, Encode, Decode, Default)]
     struct IndexingData {
         skcd_ipfs_hash: Vec<u8>,
         block_number: u32,
-    }
-
-    impl IndexingData {
-        fn empty() -> IndexingData {
-            IndexingData {
-                skcd_ipfs_hash: Vec::<u8>::new(),
-                block_number: 0,
-            }
-        }
+        grpc_kind: GrpcCallKind,
+        // optional: only if GrpcCallKind::GarbleAndStrip
+        tx_msg: Option<Vec<u8>>,
     }
 
     impl<T: Config> Pallet<T> {
         /// Append a new number to the tail of the list, removing an element from the head if reaching
         ///   the bounded length.
-        fn append_or_replace_skcd_hash(skcd_cid: Vec<u8>) {
+        fn append_or_replace_skcd_hash(
+            skcd_cid: Vec<u8>,
+            grpc_kind: GrpcCallKind,
+            tx_msg: Option<Vec<u8>>,
+        ) {
             let key = Self::derived_key();
             let data = IndexingData {
                 skcd_ipfs_hash: skcd_cid,
                 block_number: 1,
+                grpc_kind: grpc_kind,
+                tx_msg: tx_msg,
             };
             sp_io::offchain_index::set(&key, &data.encode());
         }
@@ -280,8 +298,8 @@ pub mod pallet {
 
             let indexing_data = oci_mem
                 .get::<IndexingData>()
-                .unwrap_or(Some(IndexingData::empty()))
-                .unwrap_or(IndexingData::empty());
+                .unwrap_or(Some(IndexingData::default()))
+                .unwrap_or(IndexingData::default());
 
             let to_process_skcd_cid = indexing_data.skcd_ipfs_hash;
             let to_process_block_number = indexing_data.block_number;
@@ -316,45 +334,102 @@ pub mod pallet {
                 //
                 // DO NOT use "sp_io::offchain_index::set"!
                 // We MUST use "StorageValueRef::persistent" else the value is not updated??
-                oci_mem.set(&IndexingData::empty());
+                oci_mem.set(&IndexingData::default());
 
-                match Self::call_grpc_garble(&to_process_skcd_cid) {
-                    Ok(info) => {
-                        // TODO return result via tx
-                        // s_info.set(&info);
-                        log::info!("[ocw-garble] FINAL got result IPFS hash : {:x?}", info);
+                match indexing_data.grpc_kind {
+                    GrpcCallKind::GarbleStandard => {
+                        match Self::call_grpc_garble(&to_process_skcd_cid) {
+                            Ok(result_ipfs_hash) => {
+                                // TODO return result via tx
+                                let result_ipfs_hash_str = str::from_utf8(&result_ipfs_hash)
+                                    .map_err(|_| <Error<T>>::DeserializeToStrError)?;
+                                log::info!(
+                                    "[ocw-garble] FINAL got result IPFS hash : {:x?}",
+                                    result_ipfs_hash_str
+                                );
+                            }
+                            Err(err) => {
+                                return Err(err);
+                            }
+                        }
                     }
-                    Err(err) => {
-                        return Err(err);
+                    GrpcCallKind::GarbleAndStrip => {
+                        match Self::call_grpc_garble_and_strip(
+                            &to_process_skcd_cid,
+                            &indexing_data.tx_msg.expect("missing tx_msg"),
+                        ) {
+                            Ok(result_ipfs_hash) => {
+                                // TODO return result via tx
+                                let result_ipfs_hash_str = str::from_utf8(&result_ipfs_hash)
+                                    .map_err(|_| <Error<T>>::DeserializeToStrError)?;
+                                log::info!(
+                                    "[ocw-garble] FINAL got result IPFS hash : {:x?}",
+                                    result_ipfs_hash_str
+                                );
+                            }
+                            Err(err) => {
+                                return Err(err);
+                            }
+                        }
                     }
                 }
             }
             Ok(())
         }
 
-        /// Fetch from remote and deserialize the JSON to a struct
+        /// Call the GRPC endpoint API_ENDPOINT_GARBLE_URL, encoding the request as grpc-web, and decoding the response
+        ///
+        /// return: a IPFS hash
         fn call_grpc_garble(skcd_cid: &Vec<u8>) -> Result<Vec<u8>, Error<T>> {
             let skcd_cid_str = sp_std::str::from_utf8(&skcd_cid)
-                .expect("encode_body2 from_utf8")
+                .expect("call_grpc_garble from_utf8")
                 .to_owned();
             let input = crate::interstellarpbapigarble::GarbleIpfsRequest {
                 skcd_cid: skcd_cid_str,
             };
             let body_bytes = ocw_common::encode_body(input);
 
-            let resp_bytes =
+            let (resp_bytes, resp_content_type) =
                 ocw_common::fetch_from_remote_grpc_web(body_bytes, API_ENDPOINT_GARBLE_URL)
                     .map_err(|e| {
-                        log::error!("[ocw-garble] fetch_from_remote error: {:?}", e);
+                        log::error!("[ocw-garble] call_grpc_garble error: {:?}", e);
                         <Error<T>>::HttpFetchingError
                     })?;
 
-            let resp_str =
-                str::from_utf8(&resp_bytes).map_err(|_| <Error<T>>::DeserializeToStrError)?;
-            // Print out our fetched JSON string
-            log::info!("[ocw-garble] fetch_n_parse: {}", resp_str);
+            let (resp, _trailers): (crate::interstellarpbapigarble::GarbleIpfsReply, _) =
+                ocw_common::decode_body(resp_bytes, resp_content_type);
+            Ok(resp.pgarbled_cid.bytes().collect())
+        }
 
-            Ok(resp_str.encode())
+        /// Call the GRPC endpoint API_ENDPOINT_GARBLE_STRIP_URL, encoding the request as grpc-web, and decoding the response
+        ///
+        /// return: a IPFS hash
+        fn call_grpc_garble_and_strip(
+            skcd_cid: &Vec<u8>,
+            tx_msg: &Vec<u8>,
+        ) -> Result<Vec<u8>, Error<T>> {
+            let skcd_cid_str = sp_std::str::from_utf8(&skcd_cid)
+                .expect("call_grpc_garble_and_strip from_utf8")
+                .to_owned();
+            let tx_msg_str = sp_std::str::from_utf8(&tx_msg)
+                .expect("call_grpc_garble_and_strip from_utf8")
+                .to_owned();
+            let input = crate::interstellarpbapigarble::GarbleAndStripIpfsRequest {
+                skcd_cid: skcd_cid_str,
+                tx_msg: tx_msg_str,
+            };
+            let body_bytes = ocw_common::encode_body(input);
+
+            let (resp_bytes, resp_content_type) =
+                ocw_common::fetch_from_remote_grpc_web(body_bytes, API_ENDPOINT_GARBLE_STRIP_URL)
+                    .map_err(|e| {
+                    log::error!("[ocw-garble] call_grpc_garble_and_strip error: {:?}", e);
+                    <Error<T>>::HttpFetchingError
+                })?;
+
+            let (resp, _trailers): (crate::interstellarpbapigarble::GarbleAndStripIpfsReply, _) =
+                ocw_common::decode_body(resp_bytes, resp_content_type);
+            Ok(resp.pgarbled_cid.bytes().collect())
         }
     }
 
