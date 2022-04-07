@@ -124,7 +124,7 @@ pub mod pallet {
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
     pub enum Event<T: Config> {
-        NewSkcdIpfsCid(Option<T::AccountId>, Vec<u8>),
+        NewSkcdIpfsCid(Option<T::AccountId>, Option<Vec<u8>>),
     }
 
     // Errors inform users that something went wrong.
@@ -199,34 +199,26 @@ pub mod pallet {
         ) -> DispatchResult {
             let who = ensure_signed(origin)?;
             log::info!(
-                "[ocw-circuits] submit_config_generic_signed: ({}, {:?})",
+                "[ocw-circuits] submit_config_generic_signed: ({:?}, {:?})",
                 sp_std::str::from_utf8(&verilog_cid).expect("verilog_cid utf8"),
                 who
             );
 
             let copy = verilog_cid.clone();
-            Self::append_or_replace_verilog_hash(verilog_cid, GrpcCallKind::Generic);
+            Self::append_or_replace_verilog_hash(Some(verilog_cid), GrpcCallKind::Generic);
 
-            Self::deposit_event(Event::NewSkcdIpfsCid(Some(who), copy));
+            Self::deposit_event(Event::NewSkcdIpfsCid(Some(who), Some(copy)));
             Ok(())
         }
 
         #[pallet::weight(10000)]
-        pub fn submit_config_display_signed(
-            origin: OriginFor<T>,
-            verilog_cid: Vec<u8>,
-        ) -> DispatchResult {
+        pub fn submit_config_display_signed(origin: OriginFor<T>) -> DispatchResult {
             let who = ensure_signed(origin)?;
-            log::info!(
-                "[ocw-circuits] submit_config_display_signed: ({}, {:?})",
-                sp_std::str::from_utf8(&verilog_cid).expect("verilog_cid utf8"),
-                who
-            );
+            log::info!("[ocw-circuits] submit_config_display_signed: ({:?})", who);
 
-            let copy = verilog_cid.clone();
-            Self::append_or_replace_verilog_hash(verilog_cid, GrpcCallKind::Display);
+            Self::append_or_replace_verilog_hash(None, GrpcCallKind::Display);
 
-            Self::deposit_event(Event::NewSkcdIpfsCid(Some(who), copy));
+            Self::deposit_event(Event::NewSkcdIpfsCid(Some(who), None));
             Ok(())
         }
     }
@@ -261,7 +253,9 @@ pub mod pallet {
 
     #[derive(Debug, Deserialize, Encode, Decode, Default)]
     struct IndexingData {
-        verilog_ipfs_hash: Vec<u8>,
+        // verilog_ipfs_hash only if GrpcCallKind::Generic
+        // (For now) when it is GrpcCallKind::Display the corresponding Verilog are packaged with the api_circuits
+        verilog_ipfs_hash: Option<Vec<u8>>,
         block_number: u32,
         grpc_kind: GrpcCallKind,
     }
@@ -269,7 +263,7 @@ pub mod pallet {
     impl<T: Config> Pallet<T> {
         /// Append a new number to the tail of the list, removing an element from the head if reaching
         ///   the bounded length.
-        fn append_or_replace_verilog_hash(verilog_cid: Vec<u8>, grpc_kind: GrpcCallKind) {
+        fn append_or_replace_verilog_hash(verilog_cid: Option<Vec<u8>>, grpc_kind: GrpcCallKind) {
             let key = Self::derived_key();
             let data = IndexingData {
                 verilog_ipfs_hash: verilog_cid,
@@ -304,7 +298,7 @@ pub mod pallet {
             let to_process_block_number = indexing_data.block_number;
 
             // TODO proper job queue; or at least proper CHECK
-            if to_process_verilog_cid.is_empty() || to_process_block_number == 0 {
+            if to_process_block_number == 0 {
                 log::info!("[ocw-circuits] nothing to do, returning...");
                 return Ok(());
             }
@@ -336,8 +330,9 @@ pub mod pallet {
                 oci_mem.set(&IndexingData::default());
 
                 match indexing_data.grpc_kind {
-                    GrpcCallKind::Generic => match Self::call_grpc_generic(&to_process_verilog_cid)
-                    {
+                    GrpcCallKind::Generic => match Self::call_grpc_generic(
+                        &to_process_verilog_cid.expect("missing verilog_cid"),
+                    ) {
                         Ok(result_ipfs_hash) => {
                             // TODO return result via tx
                             let result_ipfs_hash_str = str::from_utf8(&result_ipfs_hash)

@@ -200,7 +200,7 @@ pub mod pallet {
             );
 
             let copy = skcd_cid.clone();
-            Self::append_or_replace_skcd_hash(skcd_cid, GrpcCallKind::GarbleStandard);
+            Self::append_or_replace_skcd_hash(skcd_cid, GrpcCallKind::GarbleStandard, None);
 
             Self::deposit_event(Event::NewSkcdIpfsCid(Some(who), copy));
             Ok(())
@@ -221,7 +221,7 @@ pub mod pallet {
             );
 
             let copy = skcd_cid.clone();
-            Self::append_or_replace_skcd_hash(skcd_cid, GrpcCallKind::GarbleAndStrip);
+            Self::append_or_replace_skcd_hash(skcd_cid, GrpcCallKind::GarbleAndStrip, Some(tx_msg));
 
             Self::deposit_event(Event::NewSkcdIpfsCid(Some(who), copy));
             Ok(())
@@ -261,17 +261,24 @@ pub mod pallet {
         skcd_ipfs_hash: Vec<u8>,
         block_number: u32,
         grpc_kind: GrpcCallKind,
+        // optional: only if GrpcCallKind::GarbleAndStrip
+        tx_msg: Option<Vec<u8>>,
     }
 
     impl<T: Config> Pallet<T> {
         /// Append a new number to the tail of the list, removing an element from the head if reaching
         ///   the bounded length.
-        fn append_or_replace_skcd_hash(skcd_cid: Vec<u8>, grpc_kind: GrpcCallKind) {
+        fn append_or_replace_skcd_hash(
+            skcd_cid: Vec<u8>,
+            grpc_kind: GrpcCallKind,
+            tx_msg: Option<Vec<u8>>,
+        ) {
             let key = Self::derived_key();
             let data = IndexingData {
                 skcd_ipfs_hash: skcd_cid,
                 block_number: 1,
                 grpc_kind: grpc_kind,
+                tx_msg: tx_msg,
             };
             sp_io::offchain_index::set(&key, &data.encode());
         }
@@ -329,18 +336,41 @@ pub mod pallet {
                 // We MUST use "StorageValueRef::persistent" else the value is not updated??
                 oci_mem.set(&IndexingData::default());
 
-                match Self::call_grpc_garble(&to_process_skcd_cid) {
-                    Ok(result_ipfs_hash) => {
-                        // TODO return result via tx
-                        let result_ipfs_hash_str = str::from_utf8(&result_ipfs_hash)
-                            .map_err(|_| <Error<T>>::DeserializeToStrError)?;
-                        log::info!(
-                            "[ocw-garble] FINAL got result IPFS hash : {:x?}",
-                            result_ipfs_hash_str
-                        );
+                match indexing_data.grpc_kind {
+                    GrpcCallKind::GarbleStandard => {
+                        match Self::call_grpc_garble(&to_process_skcd_cid) {
+                            Ok(result_ipfs_hash) => {
+                                // TODO return result via tx
+                                let result_ipfs_hash_str = str::from_utf8(&result_ipfs_hash)
+                                    .map_err(|_| <Error<T>>::DeserializeToStrError)?;
+                                log::info!(
+                                    "[ocw-garble] FINAL got result IPFS hash : {:x?}",
+                                    result_ipfs_hash_str
+                                );
+                            }
+                            Err(err) => {
+                                return Err(err);
+                            }
+                        }
                     }
-                    Err(err) => {
-                        return Err(err);
+                    GrpcCallKind::GarbleAndStrip => {
+                        match Self::call_grpc_garble_and_strip(
+                            &to_process_skcd_cid,
+                            &indexing_data.tx_msg.expect("missing tx_msg"),
+                        ) {
+                            Ok(result_ipfs_hash) => {
+                                // TODO return result via tx
+                                let result_ipfs_hash_str = str::from_utf8(&result_ipfs_hash)
+                                    .map_err(|_| <Error<T>>::DeserializeToStrError)?;
+                                log::info!(
+                                    "[ocw-garble] FINAL got result IPFS hash : {:x?}",
+                                    result_ipfs_hash_str
+                                );
+                            }
+                            Err(err) => {
+                                return Err(err);
+                            }
+                        }
                     }
                 }
             }
@@ -376,14 +406,17 @@ pub mod pallet {
         /// return: a IPFS hash
         fn call_grpc_garble_and_strip(
             skcd_cid: &Vec<u8>,
-            tx_msg: &str,
+            tx_msg: &Vec<u8>,
         ) -> Result<Vec<u8>, Error<T>> {
             let skcd_cid_str = sp_std::str::from_utf8(&skcd_cid)
                 .expect("call_grpc_garble_and_strip from_utf8")
                 .to_owned();
+            let tx_msg_str = sp_std::str::from_utf8(&tx_msg)
+                .expect("call_grpc_garble_and_strip from_utf8")
+                .to_owned();
             let input = crate::interstellarpbapigarble::GarbleAndStripIpfsRequest {
                 skcd_cid: skcd_cid_str,
-                tx_msg: tx_msg.to_owned(),
+                tx_msg: tx_msg_str,
             };
             let body_bytes = ocw_common::encode_body(input);
 
