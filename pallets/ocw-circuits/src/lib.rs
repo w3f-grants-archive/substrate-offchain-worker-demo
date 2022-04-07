@@ -124,7 +124,6 @@ pub mod pallet {
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
     pub enum Event<T: Config> {
-        // TODO NewDisplayConfig(Option<T::AccountId>, u32, u32),
         NewSkcdIpfsCid(Option<T::AccountId>, Vec<u8>),
     }
 
@@ -336,19 +335,36 @@ pub mod pallet {
                 // We MUST use "StorageValueRef::persistent" else the value is not updated??
                 oci_mem.set(&IndexingData::default());
 
-                match Self::call_grpc_generic(&to_process_verilog_cid) {
-                    Ok(result_ipfs_hash) => {
-                        // TODO return result via tx
-                        let result_ipfs_hash_str = str::from_utf8(&result_ipfs_hash)
-                            .map_err(|_| <Error<T>>::DeserializeToStrError)?;
-                        log::info!(
-                            "[ocw-circuits] FINAL got result IPFS hash : {:x?}",
-                            result_ipfs_hash_str
-                        );
-                    }
-                    Err(err) => {
-                        return Err(err);
-                    }
+                match indexing_data.grpc_kind {
+                    GrpcCallKind::Generic => match Self::call_grpc_generic(&to_process_verilog_cid)
+                    {
+                        Ok(result_ipfs_hash) => {
+                            // TODO return result via tx
+                            let result_ipfs_hash_str = str::from_utf8(&result_ipfs_hash)
+                                .map_err(|_| <Error<T>>::DeserializeToStrError)?;
+                            log::info!(
+                                "[ocw-circuits] call_grpc_generic FINAL got result IPFS hash : {:x?}",
+                                result_ipfs_hash_str
+                            );
+                        }
+                        Err(err) => {
+                            return Err(err);
+                        }
+                    },
+                    GrpcCallKind::Display => match Self::call_grpc_display() {
+                        Ok(result_ipfs_hash) => {
+                            // TODO return result via tx
+                            let result_ipfs_hash_str = str::from_utf8(&result_ipfs_hash)
+                                .map_err(|_| <Error<T>>::DeserializeToStrError)?;
+                            log::info!(
+                                "[ocw-circuits] call_grpc_display FINAL got result IPFS hash : {:x?}",
+                                result_ipfs_hash_str
+                            );
+                        }
+                        Err(err) => {
+                            return Err(err);
+                        }
+                    },
                 }
             }
             Ok(())
@@ -373,7 +389,7 @@ pub mod pallet {
                         <Error<T>>::HttpFetchingError
                     })?;
 
-            let (resp, trailers): (
+            let (resp, _trailers): (
                 crate::interstellarpbapicircuits::SkcdGenericFromIpfsReply,
                 _,
             ) = ocw_common::decode_body(resp_bytes, resp_content_type);
@@ -397,7 +413,7 @@ pub mod pallet {
                         <Error<T>>::HttpFetchingError
                     })?;
 
-            let (resp, trailers): (crate::interstellarpbapicircuits::SkcdDisplayReply, _) =
+            let (resp, _trailers): (crate::interstellarpbapicircuits::SkcdDisplayReply, _) =
                 ocw_common::decode_body(resp_bytes, resp_content_type);
             Ok(resp.skcd_cid.bytes().collect())
         }

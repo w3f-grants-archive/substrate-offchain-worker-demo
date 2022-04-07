@@ -366,7 +366,7 @@ pub mod pallet {
                         <Error<T>>::HttpFetchingError
                     })?;
 
-            let (resp, trailers): (crate::interstellarpbapigarble::GarbleIpfsReply, _) =
+            let (resp, _trailers): (crate::interstellarpbapigarble::GarbleIpfsReply, _) =
                 ocw_common::decode_body(resp_bytes, resp_content_type);
             Ok(resp.pgarbled_cid.bytes().collect())
         }
@@ -394,7 +394,7 @@ pub mod pallet {
                     <Error<T>>::HttpFetchingError
                 })?;
 
-            let (resp, trailers): (crate::interstellarpbapigarble::GarbleAndStripIpfsReply, _) =
+            let (resp, _trailers): (crate::interstellarpbapigarble::GarbleAndStripIpfsReply, _) =
                 ocw_common::decode_body(resp_bytes, resp_content_type);
             Ok(resp.pgarbled_cid.bytes().collect())
         }
