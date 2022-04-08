@@ -27,6 +27,41 @@ Since this repository is based on Substrate Node Template,
 [it's README](https://github.com/substrate-developer-hub/substrate-node-template/blob/v3.0.0%2Bmonthly-2021-10/README.md)
 applies to this repository as well.
 
+### Dev
+
+For faster iteration:
+- [MUST] use `lld` or `mold` as linker
+- [not really needed] use Rust 1.62+
+- [optional] `SKIP_WASM_BUILD=` allows to shave off ~10s; but CHECK wasm when adding dependencies!
+
+NOTE: MUST use env var b/c using config.toml results in:
+```
+# mold or /usr/local/bin/mold :
+#  Compiling wasm-test v1.0.0 (/tmp/.tmpH8Fteg)
+#   error: linking with `rust-lld` failed: exit status: 1
+# "note: rust-lld: error: unknown argument: -fuse-ld=/usr/local/bin/mold"
+```
+(both with lld and mold)
+
+#### comparison
+
+- [stable 1.60 + ld + wasm] `cargo build --timings`
+    - "Finished dev [unoptimized + debuginfo] target(s) in 57.99s"
+- [stable 1.60 + ld + NO wasm] `SKIP_WASM_BUILD= cargo build --timings`
+    - "Finished dev [unoptimized + debuginfo] target(s) in 46.37s"
+    - b/c remove ~10+s taken by "node-template-runtime v3.0.0-monthly-2021-10 build script (run) 	11.8s 		default, std"
+- [stable 1.60 + lld] `SKIP_WASM_BUILD= RUSTFLAGS="-C linker=clang -C link-args=-fuse-ld=lld" cargo build --timings`
+    - "Finished dev [unoptimized + debuginfo] target(s) in 19.79s"
+- [stable 1.60 + mold] `SKIP_WASM_BUILD= RUSTFLAGS="-C linker=clang -C link-args=-fuse-ld=mold" cargo build --timings`
+    - "Finished dev [unoptimized + debuginfo] target(s) in 19.49s"
+
+- [nightly 1.62 + ld] `SKIP_WASM_BUILD= cargo +nightly build --timings`
+    - "Finished dev [unoptimized + debuginfo] target(s) in 43.30s"
+- [nightly 1.62 + lld] `SKIP_WASM_BUILD= RUSTFLAGS="-C link-args=-fuse-ld=lld" cargo +nightly build --timings`
+    - "Finished dev [unoptimized + debuginfo] target(s) in 22.36s"
+- [nightly 1.62 + mold] `SKIP_WASM_BUILD= RUSTFLAGS="-C linker=clang -C link-args=-fuse-ld=mold" cargo +nightly build --timings`
+    - "Finished dev [unoptimized + debuginfo] target(s) in 17.95s"
+
 ### About Off-chain Worker
 
 - The core of OCW features are demonstrated in [`pallets-ocw`](./pallets/ocw/src/lib.rs), and
