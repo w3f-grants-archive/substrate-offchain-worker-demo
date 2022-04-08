@@ -8,9 +8,6 @@ mod interstellarpbapigarble {
 
 pub use pallet::*;
 
-#[cfg(test)]
-mod tests;
-
 #[frame_support::pallet]
 pub mod pallet {
     use codec::{Decode, Encode};
@@ -20,7 +17,9 @@ pub mod pallet {
     use frame_system::ensure_signed;
     use frame_system::offchain::AppCrypto;
     use frame_system::offchain::CreateSignedTransaction;
+    use frame_system::offchain::SendSignedTransaction;
     use frame_system::offchain::SignedPayload;
+    use frame_system::offchain::Signer;
     use frame_system::offchain::SigningTypes;
     use frame_system::pallet_prelude::BlockNumberFor;
     use frame_system::pallet_prelude::OriginFor;
@@ -34,6 +33,7 @@ pub mod pallet {
     use sp_runtime::transaction_validity::InvalidTransaction;
     use sp_runtime::RuntimeDebug;
     use sp_std::borrow::ToOwned;
+    use sp_std::cell::RefCell;
     use sp_std::str;
     use sp_std::vec::Vec;
 
@@ -122,8 +122,8 @@ pub mod pallet {
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
     pub enum Event<T: Config> {
-        // TODO NewDisplayConfig(Option<T::AccountId>, u32, u32),
-        NewSkcdIpfsCid(Option<T::AccountId>, Vec<u8>),
+        // Sent at the end of the offchain_worker(ie it is an OUTPUT)
+        NewGarbledIpfsCid(Vec<u8>),
     }
 
     // Errors inform users that something went wrong.
@@ -199,10 +199,8 @@ pub mod pallet {
                 who
             );
 
-            let copy = skcd_cid.clone();
             Self::append_or_replace_skcd_hash(skcd_cid, GrpcCallKind::GarbleStandard, None);
 
-            Self::deposit_event(Event::NewSkcdIpfsCid(Some(who), copy));
             Ok(())
         }
 
@@ -220,10 +218,27 @@ pub mod pallet {
                 who
             );
 
-            let copy = skcd_cid.clone();
             Self::append_or_replace_skcd_hash(skcd_cid, GrpcCallKind::GarbleAndStrip, Some(tx_msg));
 
-            Self::deposit_event(Event::NewSkcdIpfsCid(Some(who), copy));
+            Ok(())
+        }
+
+        /// Called at the end of offchain_worker to publish the result
+        /// Not meant to be called by a user
+        // TODO use "with signed payload" and check if expected key?
+        #[pallet::weight(10000)]
+        pub fn callback_new_garbled_signed(
+            origin: OriginFor<T>,
+            pgarbled_cid: Vec<u8>,
+        ) -> DispatchResult {
+            let who = ensure_signed(origin)?;
+            log::info!(
+                "[ocw-garble] callback_new_garbled_signed: ({:?},{:?})",
+                sp_std::str::from_utf8(&pgarbled_cid).expect("skcd_cid utf8"),
+                who
+            );
+
+            Self::deposit_event(Event::NewGarbledIpfsCid(pgarbled_cid));
             Ok(())
         }
     }
@@ -336,43 +351,15 @@ pub mod pallet {
                 // We MUST use "StorageValueRef::persistent" else the value is not updated??
                 oci_mem.set(&IndexingData::default());
 
-                match indexing_data.grpc_kind {
-                    GrpcCallKind::GarbleStandard => {
-                        match Self::call_grpc_garble(&to_process_skcd_cid) {
-                            Ok(result_ipfs_hash) => {
-                                // TODO return result via tx
-                                let result_ipfs_hash_str = str::from_utf8(&result_ipfs_hash)
-                                    .map_err(|_| <Error<T>>::DeserializeToStrError)?;
-                                log::info!(
-                                    "[ocw-garble] FINAL got result IPFS hash : {:x?}",
-                                    result_ipfs_hash_str
-                                );
-                            }
-                            Err(err) => {
-                                return Err(err);
-                            }
-                        }
-                    }
-                    GrpcCallKind::GarbleAndStrip => {
-                        match Self::call_grpc_garble_and_strip(
-                            &to_process_skcd_cid,
-                            &indexing_data.tx_msg.expect("missing tx_msg"),
-                        ) {
-                            Ok(result_ipfs_hash) => {
-                                // TODO return result via tx
-                                let result_ipfs_hash_str = str::from_utf8(&result_ipfs_hash)
-                                    .map_err(|_| <Error<T>>::DeserializeToStrError)?;
-                                log::info!(
-                                    "[ocw-garble] FINAL got result IPFS hash : {:x?}",
-                                    result_ipfs_hash_str
-                                );
-                            }
-                            Err(err) => {
-                                return Err(err);
-                            }
-                        }
-                    }
-                }
+                let result_grpc_call = match indexing_data.grpc_kind {
+                    GrpcCallKind::GarbleStandard => Self::call_grpc_garble(&to_process_skcd_cid),
+                    GrpcCallKind::GarbleAndStrip => Self::call_grpc_garble_and_strip(
+                        &to_process_skcd_cid,
+                        &indexing_data.tx_msg.expect("missing tx_msg"),
+                    ),
+                };
+
+                Self::finalize_grpc_call(result_grpc_call)
             }
             Ok(())
         }
@@ -430,6 +417,43 @@ pub mod pallet {
             let (resp, _trailers): (crate::interstellarpbapigarble::GarbleAndStripIpfsReply, _) =
                 ocw_common::decode_body(resp_bytes, resp_content_type);
             Ok(resp.pgarbled_cid.bytes().collect())
+        }
+
+        /// Called at the end of process_if_needed/offchain_worker
+        /// Publish the result back via send_signed_transaction(and Event)
+        ///
+        /// param: result_grpc_call: returned by call_grpc_garble_and_strip/call_grpc_garble
+        fn finalize_grpc_call(result_grpc_call: Result<Vec<u8>, Error<T>>) {
+            let signer = Signer::<T, T::AuthorityId>::all_accounts();
+
+            match result_grpc_call {
+                Ok(result_ipfs_hash) => {
+                    let result_ipfs_hash_str = str::from_utf8(&result_ipfs_hash)
+                        .map_err(|_| <Error<T>>::DeserializeToStrError);
+                    log::info!(
+                        "[ocw-garble] FINAL got result IPFS hash : {:x?}",
+                        result_ipfs_hash_str
+                    );
+
+                    // "We have to borrow the data to capture it in the transaction"
+                    let ref_result_ipfs_hash = RefCell::new(result_ipfs_hash);
+
+                    // Using `send_signed_transaction` associated type we create and submit a transaction
+                    // representing the call we've just created.
+                    // `send_signed_transaction()` return type is `Option<(Account<T>, Result<(), ()>)>`. It is:
+                    //   - `None`: no account is available for sending transaction
+                    //   - `Some((account, Ok(())))`: transaction is successfully sent
+                    //   - `Some((account, Err(())))`: error occurred when sending the transaction
+                    let _results = signer.send_signed_transaction(|_account| {
+                        Call::callback_new_garbled_signed {
+                            pgarbled_cid: ref_result_ipfs_hash.borrow().into_mut().to_vec(),
+                        }
+                    });
+                }
+                Err(err) => {
+                    log::error!("[ocw-garble] finalize_grpc_call: error: {:?}", err);
+                }
+            }
         }
     }
 
