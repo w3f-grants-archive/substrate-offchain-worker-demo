@@ -1,15 +1,14 @@
-[profile.release]
-panic = 'unwind'
-
 [workspace]
 members = [
-  'node',
-  'pallets/ocw-circuits/',
-  'pallets/ocw-garble/',
-  'runtime',
-  'ocw-common'
+    "node",
+    "runtime",
+    # custom
+    "ocw-common",
+    "pallets/ocw-circuits",
+    "pallets/ocw-garble",
 ]
 
-# [package]
-# name = "fakeroot"
-# version = "0.0.1"
+[profile.release]
+panic = "unwind"
+[profile.dev]
+panic = "unwind"

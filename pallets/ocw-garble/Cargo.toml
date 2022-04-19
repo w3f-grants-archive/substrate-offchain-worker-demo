@@ -1,6 +1,6 @@
 [package]
 name = "pallet-ocw-garble"
-version = "1.0.0"
+version = "4.0.0-dev"
 edition = "2018"
 authors = ['Substrate DevHub <https://github.com/substrate-developer-hub>']
 repository = "https://github.com/jimmychu0807/substrate-offchain-worker-demo"
@@ -21,13 +21,9 @@ serde_json = { version = '1.0.67', default-features = false, features = ['alloc'
 targets = ['x86_64-unknown-linux-gnu']
 
 [dependencies]
-codec = { package = "parity-scale-codec", version = "2.0.0", default-features = false }
 log = { version = "0.4.14", default-features = false }
-scale-info = { version = "1.0", default-features = false, features = ["derive"] }
-
 serde = { version = '1.0.130', default-features = false, features = ['derive'] }
 serde_json = { version = '1.0.67', default-features = false, features = ['alloc'] }
-parking_lot = "0.11"
 
 # https://github.com/tokio-rs/prost#using-prost-in-a-no_std-crate
 prost = { version = "0.9", default-features = false, features = ["prost-derive"] }
@@ -36,30 +32,42 @@ prost-types = { version = "0.9", default-features = false }
 
 ocw-common = { path = "../../ocw-common", default-features = false }
 
-# Substrate packages
+# prost: could not find a way to use encode() in no_std context...
+# = note: the lang item is first defined in crate `std` (which `byteorder` depends on)
+# = note: first definition in `std` loaded from /home/pratn/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/wasm32-unknown-unknown/lib/libstd-d9a8e4ca4a56d589.rlib
+# quick-protobuf = { version = "0.8.0", default-features = false }
+# quick-protobuf = "0.8.0"
 
-frame-support = { version = "4.0.0-dev", default-features = false, git = 'https://github.com/paritytech/substrate.git', tag = 'monthly-2021-10' }
-frame-system = { version = "4.0.0-dev", default-features = false, git = 'https://github.com/paritytech/substrate.git', tag = 'monthly-2021-10' }
-sp-core = { version = "4.0.0-dev", default-features = false, git = 'https://github.com/paritytech/substrate.git', tag = 'monthly-2021-10' }
-sp-io = { version = "4.0.0-dev", default-features = false, git = 'https://github.com/paritytech/substrate.git', tag = 'monthly-2021-10' }
-sp-keystore = { version = "0.10.0-dev", git = 'https://github.com/paritytech/substrate.git', tag = 'monthly-2021-10', optional = true }
-sp-runtime = { version = "4.0.0-dev", default-features = false, git = 'https://github.com/paritytech/substrate.git', tag = 'monthly-2021-10' }
-sp-std = { version = "4.0.0-dev", default-features = false, git = 'https://github.com/paritytech/substrate.git', tag = 'monthly-2021-10' }
+codec = { package = "parity-scale-codec", version = "3.0.0", default-features = false, features = [
+	"derive",
+] }
+scale-info = { version = "2.0.1", default-features = false, features = ["derive"] }
+frame-support = { default-features = false, version = "4.0.0-dev", git = "https://github.com/paritytech/substrate.git", branch = "polkadot-v0.9.18"}
+frame-system = { default-features = false, version = "4.0.0-dev", git = "https://github.com/paritytech/substrate.git", branch = "polkadot-v0.9.18" }
+frame-benchmarking = { default-features = false, version = "4.0.0-dev", git = "https://github.com/paritytech/substrate.git", branch = "polkadot-v0.9.18", optional = true }
+
+sp-core = { default-features = false, version = "6.0.0", git = "https://github.com/paritytech/substrate.git", branch = "polkadot-v0.9.18" }
+sp-io = { default-features = false, version = "6.0.0", git = "https://github.com/paritytech/substrate.git", branch = "polkadot-v0.9.18" }
+sp-runtime = { version = "6.0.0", default-features = false, git = "https://github.com/paritytech/substrate.git", branch = "polkadot-v0.9.18" }
+sp-keystore = { default-features = false, version = "0.12.0", git = "https://github.com/paritytech/substrate.git", branch = "polkadot-v0.9.18", optional = true }
+sp-std = { default-features = false, version = "4.0.0", git = "https://github.com/paritytech/substrate.git", branch = "polkadot-v0.9.18" }
 
 [features]
 default = ["std"]
 std = [
 	"codec/std",
+	"scale-info/std",
 	"frame-support/std",
 	"frame-system/std",
-	"log/std",
-	"scale-info/std",
+	"frame-benchmarking/std",
 	"sp-core/std",
 	"sp-io/std",
 	"sp-keystore",
 	"sp-runtime/std",
 	"sp-std/std",
+	"log/std",
 ]
+runtime-benchmarks = ["frame-benchmarking/runtime-benchmarks"]
 try-runtime = ["frame-support/try-runtime"]
 
 [build-dependencies]
