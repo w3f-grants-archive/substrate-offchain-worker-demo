@@ -48,6 +48,7 @@ pub use sp_runtime::{Perbill, Permill};
 /// Import the template pallet.
 pub use pallet_ocw_circuits;
 pub use pallet_ocw_garble;
+pub use pallet_tx_validation;
 
 /// An index to a block.
 pub type BlockNumber = u32;
@@ -299,6 +300,11 @@ impl pallet_ocw_circuits::Config for Runtime {
     // type UnsignedPriority = UnsignedPriority;
 }
 
+// For pallet-tx-validation
+impl pallet_tx_validation::Config for Runtime {
+    type Event = Event;
+}
+
 // TODO?
 // https://github.com/paritytech/substrate/blob/master/bin/node/runtime/src/lib.rs#L454
 // impl pallet_asset_tx_payment::Config for Runtime {
@@ -392,6 +398,7 @@ construct_runtime!(
         // NOTE: that will generate extrinsics named "ocwGarble" and "ocwCircuits" in the front end
         OcwCircuits: pallet_ocw_circuits, // ::{Pallet, Call, Storage, Event<T>, ValidateUnsigned}
         OcwGarble: pallet_ocw_garble, // ::{Pallet, Call, Storage, Event<T>, ValidateUnsigned}
+        TxValidation: pallet_tx_validation,
     }
 );
 

@@ -33,7 +33,6 @@ pub mod pallet {
     use sp_runtime::transaction_validity::InvalidTransaction;
     use sp_runtime::RuntimeDebug;
     use sp_std::borrow::ToOwned;
-    use sp_std::cell::RefCell;
     use sp_std::str;
     use sp_std::vec::Vec;
 
@@ -105,8 +104,12 @@ pub mod pallet {
         }
     }
 
+    // NOTE: pallet_tx_validation::Config b/c we want to Call its extrinsics from the internal extrinsics
+    // (callback from offchain_worker)
     #[pallet::config]
-    pub trait Config: frame_system::Config + CreateSignedTransaction<Call<Self>> {
+    pub trait Config:
+        frame_system::Config + CreateSignedTransaction<Call<Self>> + pallet_tx_validation::Config
+    {
         /// The overarching event type.
         type Event: From<Event<Self>> + IsType<<Self as frame_system::Config>::Event>;
         /// The overarching dispatch call type.
@@ -124,6 +127,8 @@ pub mod pallet {
     pub enum Event<T: Config> {
         // Sent at the end of the offchain_worker(ie it is an OUTPUT)
         NewGarbledIpfsCid(Vec<u8>),
+        // Strip version: one IPFS cid for the circuit, one IPFS cid for the packmsg
+        NewGarbleAndStrippedIpfsCid(Vec<u8>, Vec<u8>),
     }
 
     // Errors inform users that something went wrong.
@@ -241,6 +246,37 @@ pub mod pallet {
             Self::deposit_event(Event::NewGarbledIpfsCid(pgarbled_cid));
             Ok(())
         }
+
+        #[pallet::weight(10000)]
+        pub fn callback_new_garbled_and_strip_signed(
+            origin: OriginFor<T>,
+            pgarbled_cid: Vec<u8>,
+            packmsg_cid: Vec<u8>,
+            circuit_digits: Vec<u8>,
+        ) -> DispatchResult {
+            let who = ensure_signed(origin.clone())?;
+            log::info!(
+                "[ocw-garble] callback_new_garbled_and_strip_signed: ({:?},{:?})",
+                sp_std::str::from_utf8(&pgarbled_cid).expect("skcd_cid utf8"),
+                who
+            );
+
+            Self::deposit_event(Event::NewGarbleAndStrippedIpfsCid(
+                pgarbled_cid.clone(),
+                packmsg_cid,
+            ));
+
+            // store the metadata using the pallet-tx-validation
+            // (only in "garble+strip" mode b/c else it makes no sense)
+            // TODO? Call?
+            // pallet_tx_validation::Call::<T>::store_metadata {
+            //     ipfs_cid: pgarbled_cid,
+            //     circuit_digits: circuit_digits,
+            // };
+            pallet_tx_validation::store_metadata_aux::<T>(origin, pgarbled_cid, circuit_digits);
+
+            Ok(())
+        }
     }
 
     impl<T: Config> Pallet<T> {
@@ -263,6 +299,12 @@ pub mod pallet {
     enum GrpcCallKind {
         GarbleStandard,
         GarbleAndStrip,
+    }
+
+    // reply type for each GrpcCallKind
+    enum GrpcCallReplyKind {
+        GarbleStandard(crate::interstellarpbapigarble::GarbleIpfsReply),
+        GarbleAndStrip(crate::interstellarpbapigarble::GarbleAndStripIpfsReply),
     }
 
     impl Default for GrpcCallKind {
@@ -367,7 +409,7 @@ pub mod pallet {
         /// Call the GRPC endpoint API_ENDPOINT_GARBLE_URL, encoding the request as grpc-web, and decoding the response
         ///
         /// return: a IPFS hash
-        fn call_grpc_garble(skcd_cid: &Vec<u8>) -> Result<Vec<u8>, Error<T>> {
+        fn call_grpc_garble(skcd_cid: &Vec<u8>) -> Result<GrpcCallReplyKind, Error<T>> {
             let skcd_cid_str = sp_std::str::from_utf8(&skcd_cid)
                 .expect("call_grpc_garble from_utf8")
                 .to_owned();
@@ -385,7 +427,7 @@ pub mod pallet {
 
             let (resp, _trailers): (crate::interstellarpbapigarble::GarbleIpfsReply, _) =
                 ocw_common::decode_body(resp_bytes, resp_content_type);
-            Ok(resp.pgarbled_cid.bytes().collect())
+            Ok(GrpcCallReplyKind::GarbleStandard(resp))
         }
 
         /// Call the GRPC endpoint API_ENDPOINT_GARBLE_STRIP_URL, encoding the request as grpc-web, and decoding the response
@@ -394,7 +436,7 @@ pub mod pallet {
         fn call_grpc_garble_and_strip(
             skcd_cid: &Vec<u8>,
             tx_msg: &Vec<u8>,
-        ) -> Result<Vec<u8>, Error<T>> {
+        ) -> Result<GrpcCallReplyKind, Error<T>> {
             let skcd_cid_str = sp_std::str::from_utf8(&skcd_cid)
                 .expect("call_grpc_garble_and_strip from_utf8")
                 .to_owned();
@@ -416,26 +458,16 @@ pub mod pallet {
 
             let (resp, _trailers): (crate::interstellarpbapigarble::GarbleAndStripIpfsReply, _) =
                 ocw_common::decode_body(resp_bytes, resp_content_type);
-            Ok(resp.pgarbled_cid.bytes().collect())
+            Ok(GrpcCallReplyKind::GarbleAndStrip(resp))
         }
 
         /// Called at the end of process_if_needed/offchain_worker
         /// Publish the result back via send_signed_transaction(and Event)
         ///
         /// param: result_grpc_call: returned by call_grpc_garble_and_strip/call_grpc_garble
-        fn finalize_grpc_call(result_grpc_call: Result<Vec<u8>, Error<T>>) {
+        fn finalize_grpc_call(result_grpc_call: Result<GrpcCallReplyKind, Error<T>>) {
             match result_grpc_call {
-                Ok(result_ipfs_hash) => {
-                    let result_ipfs_hash_str = str::from_utf8(&result_ipfs_hash)
-                        .map_err(|_| <Error<T>>::DeserializeToStrError);
-                    log::info!(
-                        "[ocw-garble] FINAL got result IPFS hash : {:x?}",
-                        result_ipfs_hash_str
-                    );
-
-                    // "We have to borrow the data to capture it in the transaction"
-                    let ref_result_ipfs_hash = RefCell::new(result_ipfs_hash);
-
+                Ok(result_reply) => {
                     // Using `send_signed_transaction` associated type we create and submit a transaction
                     // representing the call we've just created.
                     // `send_signed_transaction()` return type is `Option<(Account<T>, Result<(), ()>)>`. It is:
@@ -446,13 +478,27 @@ pub mod pallet {
                     if !signer.can_sign() {
                         log::error!("[ocw-garble] No local accounts available. Consider adding one via `author_insertKey` RPC[ALTERNATIVE DEV ONLY check 'if config.offchain_worker.enabled' in service.rs]");
                     }
-                    let results = signer.send_signed_transaction(|_account| {
-                        Call::callback_new_garbled_signed {
-                            pgarbled_cid: ref_result_ipfs_hash.borrow().into_mut().to_vec(),
+                    let results = signer.send_signed_transaction(|_account| match &result_reply {
+                        GrpcCallReplyKind::GarbleStandard(reply) => {
+                            Call::callback_new_garbled_signed {
+                                pgarbled_cid: reply.pgarbled_cid.bytes().collect(),
+                            }
+                        }
+                        GrpcCallReplyKind::GarbleAndStrip(reply) => {
+                            Call::callback_new_garbled_and_strip_signed {
+                                pgarbled_cid: reply.pgarbled_cid.bytes().collect(),
+                                packmsg_cid: reply.packmsg_cid.bytes().collect(),
+                                circuit_digits: reply
+                                    .server_metadata
+                                    .clone()
+                                    .unwrap()
+                                    .digits
+                                    .to_vec(),
+                            }
                         }
                     });
                     log::info!(
-                        "[ocw-garble] callback_new_garbled_signed sent number : {:#?}",
+                        "[ocw-garble] finalize_grpc_call sent number : {:#?}",
                         results.len()
                     );
                 }

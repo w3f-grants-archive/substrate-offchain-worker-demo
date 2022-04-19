@@ -52,6 +52,7 @@ hex-literal = { version = "0.3.4", optional = true }
 # Local Dependencies
 pallet-ocw-circuits = { version = "4.0.0-dev", default-features = false, path = "../pallets/ocw-circuits" }
 pallet-ocw-garble = { version = "4.0.0-dev", default-features = false, path = "../pallets/ocw-garble" }
+pallet-tx-validation = { version = "4.0.0-dev", default-features = false, path = "../pallets/tx-validation" }
 
 # FIX and W/A
 # w/a for "error: the wasm32-unknown-unknown target is not supported by default, you may need to enable the "js" feature. For more information see: https://docs.rs/getrandom/#webassembly-support"
@@ -101,9 +102,7 @@ runtime-benchmarks = [
 	"frame-system/runtime-benchmarks",
 	"hex-literal",
 	"pallet-balances/runtime-benchmarks",
-	# "pallet-template/runtime-benchmarks",
-	"pallet-ocw-circuits/runtime-benchmarks",
-	"pallet-ocw-garble/runtime-benchmarks",
+	"pallet-tx-validation/runtime-benchmarks",
 	"pallet-timestamp/runtime-benchmarks",
 	"sp-runtime/runtime-benchmarks",
 	# custom

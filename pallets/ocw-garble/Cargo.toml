@@ -31,6 +31,7 @@ prost = { version = "0.9", default-features = false, features = ["prost-derive"]
 prost-types = { version = "0.9", default-features = false }
 
 ocw-common = { path = "../../ocw-common", default-features = false }
+pallet-tx-validation = { path = "../tx-validation", default-features = false }
 
 # prost: could not find a way to use encode() in no_std context...
 # = note: the lang item is first defined in crate `std` (which `byteorder` depends on)
@@ -66,6 +67,8 @@ std = [
 	"sp-runtime/std",
 	"sp-std/std",
 	"log/std",
+	# custom
+	"pallet-tx-validation/std",
 ]
 runtime-benchmarks = ["frame-benchmarking/runtime-benchmarks"]
 try-runtime = ["frame-support/try-runtime"]

@@ -3662,6 +3662,7 @@ dependencies = [
  "pallet-timestamp",
  "pallet-transaction-payment",
  "pallet-transaction-payment-rpc-runtime-api",
+ "pallet-tx-validation",
  "parity-scale-codec",
  "scale-info",
  "sp-api",
@@ -3988,6 +3989,7 @@ dependencies = [
  "frame-system",
  "log",
  "ocw-common",
+ "pallet-tx-validation",
  "parity-scale-codec",
  "prost",
  "prost-build",
@@ -4112,6 +4114,21 @@ dependencies = [
  "parity-scale-codec",
  "sp-api",
  "sp-runtime",
+]
+
+[[package]]
+name = "pallet-tx-validation"
+version = "4.0.0-dev"
+dependencies = [
+ "frame-benchmarking",
+ "frame-support",
+ "frame-system",
+ "parity-scale-codec",
+ "scale-info",
+ "sp-core",
+ "sp-io",
+ "sp-runtime",
+ "sp-std",
 ]
 
 [[package]]
