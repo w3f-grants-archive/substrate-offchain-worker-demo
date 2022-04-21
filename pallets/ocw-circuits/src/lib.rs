@@ -408,8 +408,6 @@ pub mod pallet {
         ///
         /// param: result_grpc_call: returned by call_grpc_display/call_grpc_generic
         fn finalize_grpc_call(result_grpc_call: Result<Vec<u8>, Error<T>>) {
-            let signer = Signer::<T, T::AuthorityId>::all_accounts();
-
             match result_grpc_call {
                 Ok(result_ipfs_hash) => {
                     let result_ipfs_hash_str = str::from_utf8(&result_ipfs_hash)
@@ -428,13 +426,21 @@ pub mod pallet {
                     //   - `None`: no account is available for sending transaction
                     //   - `Some((account, Ok(())))`: transaction is successfully sent
                     //   - `Some((account, Err(())))`: error occurred when sending the transaction
-                    let _results =
+                    let signer = Signer::<T, T::AuthorityId>::all_accounts();
+                    if !signer.can_sign() {
+                        log::error!("[ocw-circuits] No local accounts available. Consider adding one via `author_insertKey` RPC[ALTERNATIVE DEV ONLY check 'if config.offchain_worker.enabled' in service.rs]");
+                    }
+                    let results =
                         signer.send_signed_transaction(|_account| Call::callback_new_skcd_signed {
                             skcd_cid: ref_result_ipfs_hash.borrow().into_mut().to_vec(),
                         });
+                    log::info!(
+                        "[ocw-circuits] callback_new_skcd_signed sent number : {:#?}",
+                        results.len()
+                    );
                 }
                 Err(err) => {
-                    log::error!("[ocw-garble] finalize_grpc_call: error: {:?}", err);
+                    log::error!("[ocw-circuits] finalize_grpc_call: error: {:?}", err);
                 }
             }
         }
