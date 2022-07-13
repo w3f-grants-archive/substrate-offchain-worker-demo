@@ -1,0 +1,17 @@
+# whitelist instead of blacklist
+# that way COPY is properly cached which is useful when dev/testing the dockerfile
+
+# Ignore everything
+*
+
+# Allow files and folders with a pattern starting with !
+!/build.rs
+!/Cargo.lock
+!/Cargo.toml
+# cf Cargo.toml
+!/node
+!/runtime
+!/ocw-common
+!/pallets/ocw-circuits
+!/pallets/ocw-garble
+!/pallets/tx-validation
