@@ -11,9 +11,7 @@ pub use pallet::*;
 #[frame_support::pallet]
 pub mod pallet {
     use codec::{Decode, Encode};
-    use frame_support::pallet_prelude::{
-        DispatchResult, Hooks, IsType, TransactionSource, TransactionValidity, ValidateUnsigned,
-    };
+    use frame_support::pallet_prelude::*;
     use frame_system::ensure_signed;
     use frame_system::offchain::AppCrypto;
     use frame_system::offchain::CreateSignedTransaction;
@@ -21,8 +19,8 @@ pub mod pallet {
     use frame_system::offchain::SignedPayload;
     use frame_system::offchain::Signer;
     use frame_system::offchain::SigningTypes;
-    use frame_system::pallet_prelude::BlockNumberFor;
-    use frame_system::pallet_prelude::OriginFor;
+    use frame_system::pallet_prelude::*;
+    use scale_info::prelude::*;
     use serde::Deserialize;
     use sp_core::crypto::KeyTypeId;
     use sp_core::offchain::Duration;
@@ -51,10 +49,9 @@ pub mod pallet {
 
     const ONCHAIN_TX_KEY: &[u8] = b"ocw-garble::storage::tx";
     const LOCK_KEY: &[u8] = b"ocw-garble::lock";
-    const API_ENDPOINT_GARBLE_URL: &str =
-        "http://127.0.0.1:3001/interstellarpbapigarble.GarbleApi/GarbleIpfs";
+    const API_ENDPOINT_GARBLE_URL: &str = "/interstellarpbapigarble.GarbleApi/GarbleIpfs";
     const API_ENDPOINT_GARBLE_STRIP_URL: &str =
-        "http://127.0.0.1:3001/interstellarpbapigarble.GarbleApi/GarbleAndStripIpfs";
+        "/interstellarpbapigarble.GarbleApi/GarbleAndStripIpfs";
 
     /// Based on the above `KeyTypeId` we need to generate a pallet-specific crypto type wrapper.
     /// We can utilize the supported crypto kinds (`sr25519`, `ed25519` and `ecdsa`) and augment
@@ -418,12 +415,20 @@ pub mod pallet {
             };
             let body_bytes = ocw_common::encode_body(input);
 
+            // construct the full endpoint URI using:
+            // - dynamic "URI root" from env
+            // - hardcoded API_ENDPOINT_GARBLE_URL from "const" in this file
+            #[cfg(feature = "std")]
+            let uri_root = std::env::var("INTERSTELLAR_URI_ROOT_API_GARBLE").unwrap();
+            #[cfg(not(feature = "std"))]
+            let uri_root = "PLACEHOLDER_no_std";
+            let endpoint = format!("{}{}", uri_root, API_ENDPOINT_GARBLE_URL);
+
             let (resp_bytes, resp_content_type) =
-                ocw_common::fetch_from_remote_grpc_web(body_bytes, API_ENDPOINT_GARBLE_URL)
-                    .map_err(|e| {
-                        log::error!("[ocw-garble] call_grpc_garble error: {:?}", e);
-                        <Error<T>>::HttpFetchingError
-                    })?;
+                ocw_common::fetch_from_remote_grpc_web(body_bytes, &endpoint).map_err(|e| {
+                    log::error!("[ocw-garble] call_grpc_garble error: {:?}", e);
+                    <Error<T>>::HttpFetchingError
+                })?;
 
             let (resp, _trailers): (crate::interstellarpbapigarble::GarbleIpfsReply, _) =
                 ocw_common::decode_body(resp_bytes, resp_content_type);
@@ -449,9 +454,17 @@ pub mod pallet {
             };
             let body_bytes = ocw_common::encode_body(input);
 
+            // construct the full endpoint URI using:
+            // - dynamic "URI root" from env
+            // - hardcoded API_ENDPOINT_GARBLE_STRIP_URL from "const" in this file
+            #[cfg(feature = "std")]
+            let uri_root = std::env::var("INTERSTELLAR_URI_ROOT_API_GARBLE").unwrap();
+            #[cfg(not(feature = "std"))]
+            let uri_root = "PLACEHOLDER_no_std";
+            let endpoint = format!("{}{}", uri_root, API_ENDPOINT_GARBLE_STRIP_URL);
+
             let (resp_bytes, resp_content_type) =
-                ocw_common::fetch_from_remote_grpc_web(body_bytes, API_ENDPOINT_GARBLE_STRIP_URL)
-                    .map_err(|e| {
+                ocw_common::fetch_from_remote_grpc_web(body_bytes, &endpoint).map_err(|e| {
                     log::error!("[ocw-garble] call_grpc_garble_and_strip error: {:?}", e);
                     <Error<T>>::HttpFetchingError
                 })?;

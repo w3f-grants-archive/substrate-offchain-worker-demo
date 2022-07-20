@@ -11,9 +11,7 @@ pub use pallet::*;
 #[frame_support::pallet]
 pub mod pallet {
     use codec::{Decode, Encode};
-    use frame_support::pallet_prelude::{
-        DispatchResult, Hooks, IsType, TransactionSource, TransactionValidity, ValidateUnsigned,
-    };
+    use frame_support::pallet_prelude::*;
     use frame_system::ensure_signed;
     use frame_system::offchain::AppCrypto;
     use frame_system::offchain::CreateSignedTransaction;
@@ -21,8 +19,8 @@ pub mod pallet {
     use frame_system::offchain::SignedPayload;
     use frame_system::offchain::Signer;
     use frame_system::offchain::SigningTypes;
-    use frame_system::pallet_prelude::BlockNumberFor;
-    use frame_system::pallet_prelude::OriginFor;
+    use frame_system::pallet_prelude::*;
+    use scale_info::prelude::*;
     use serde::Deserialize;
     use sp_core::crypto::KeyTypeId;
     use sp_core::offchain::Duration;
@@ -53,9 +51,9 @@ pub mod pallet {
     const ONCHAIN_TX_KEY: &[u8] = b"ocw-circuits::storage::tx";
     const LOCK_KEY: &[u8] = b"ocw-circuits::lock";
     const API_ENDPOINT_GENERIC_URL: &str =
-        "http://127.0.0.1:3000/interstellarpbapicircuits.SkcdApi/GenerateSkcdGenericFromIPFS";
+        "/interstellarpbapicircuits.SkcdApi/GenerateSkcdGenericFromIPFS";
     const API_ENDPOINT_DISPLAY_URL: &str =
-        "http://127.0.0.1:3000/interstellarpbapicircuits.SkcdApi/GenerateSkcdDisplay";
+        "/interstellarpbapicircuits.SkcdApi/GenerateSkcdDisplay";
     const DEFAULT_DISPLAY_WIDTH: u32 = 224;
     const DEFAULT_DISPLAY_HEIGHT: u32 = 96;
 
@@ -367,12 +365,20 @@ pub mod pallet {
             };
             let body_bytes = ocw_common::encode_body(input);
 
+            // construct the full endpoint URI using:
+            // - dynamic "URI root" from env
+            // - hardcoded API_ENDPOINT_GENERIC_URL from "const" in this file
+            #[cfg(feature = "std")]
+            let uri_root = std::env::var("aaa").unwrap();
+            #[cfg(not(feature = "std"))]
+            let uri_root = "PLACEHOLDER_no_std";
+            let endpoint = format!("{}{}", uri_root, API_ENDPOINT_GENERIC_URL);
+
             let (resp_bytes, resp_content_type) =
-                ocw_common::fetch_from_remote_grpc_web(body_bytes, API_ENDPOINT_GENERIC_URL)
-                    .map_err(|e| {
-                        log::error!("[ocw-circuits] call_grpc_generic error: {:?}", e);
-                        <Error<T>>::HttpFetchingError
-                    })?;
+                ocw_common::fetch_from_remote_grpc_web(body_bytes, &endpoint).map_err(|e| {
+                    log::error!("[ocw-circuits] call_grpc_generic error: {:?}", e);
+                    <Error<T>>::HttpFetchingError
+                })?;
 
             let (resp, _trailers): (
                 crate::interstellarpbapicircuits::SkcdGenericFromIpfsReply,
@@ -391,12 +397,20 @@ pub mod pallet {
             };
             let body_bytes = ocw_common::encode_body(input);
 
+            // construct the full endpoint URI using:
+            // - dynamic "URI root" from env
+            // - hardcoded API_ENDPOINT_DISPLAY_URL from "const" in this file
+            #[cfg(feature = "std")]
+            let uri_root = std::env::var("INTERSTELLAR_URI_ROOT_API_CIRCUITS").unwrap();
+            #[cfg(not(feature = "std"))]
+            let uri_root = "PLACEHOLDER_no_std";
+            let endpoint = format!("{}{}", uri_root, API_ENDPOINT_DISPLAY_URL);
+
             let (resp_bytes, resp_content_type) =
-                ocw_common::fetch_from_remote_grpc_web(body_bytes, API_ENDPOINT_DISPLAY_URL)
-                    .map_err(|e| {
-                        log::error!("[ocw-circuits] call_grpc_display error: {:?}", e);
-                        <Error<T>>::HttpFetchingError
-                    })?;
+                ocw_common::fetch_from_remote_grpc_web(body_bytes, &endpoint).map_err(|e| {
+                    log::error!("[ocw-circuits] call_grpc_display error: {:?}", e);
+                    <Error<T>>::HttpFetchingError
+                })?;
 
             let (resp, _trailers): (crate::interstellarpbapicircuits::SkcdDisplayReply, _) =
                 ocw_common::decode_body(resp_bytes, resp_content_type);
