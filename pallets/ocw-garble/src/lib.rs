@@ -115,6 +115,21 @@ pub mod pallet {
         type AuthorityId: AppCrypto<Self::Public, Self::Signature>;
     }
 
+    /// Store account_id -> list(ipfs_cids);
+    /// That represents the "list of pending txs" for a given Account
+    #[pallet::storage]
+    #[pallet::getter(fn get_pending_circuits_for_account)]
+    pub(super) type AccountToPendingCircuitsMap<T: Config> = StorageMap<
+        _,
+        Twox128,
+        // key: (AccountId, IPFS hash)
+        // 32 b/c IPFS hash is 256 bits = 32 bytes
+        // But due to encoding(??) in practice it is 46 bytes(checked with debugger)
+        (T::AccountId,),
+        (BoundedVec<u8, ConstU32<64>>,),
+        ValueQuery,
+    >;
+
     #[pallet::pallet]
     #[pallet::generate_store(pub(super) trait Store)]
     pub struct Pallet<T>(_);
@@ -270,7 +285,19 @@ pub mod pallet {
             //     ipfs_cid: pgarbled_cid,
             //     circuit_digits: circuit_digits,
             // };
-            pallet_tx_validation::store_metadata_aux::<T>(origin, pgarbled_cid, circuit_digits);
+            pallet_tx_validation::store_metadata_aux::<T>(
+                origin,
+                pgarbled_cid.clone(),
+                circuit_digits,
+            );
+
+            // and update our internal map of pending circuits for the given account
+            // this is used via RPC by the app, not directly!
+            // TODO append if exists, or create new Vec if not!
+            <AccountToPendingCircuitsMap<T>>::insert(
+                (who,),
+                (TryInto::<BoundedVec<u8, ConstU32<64>>>::try_into(pgarbled_cid).unwrap(),),
+            );
 
             Ok(())
         }
