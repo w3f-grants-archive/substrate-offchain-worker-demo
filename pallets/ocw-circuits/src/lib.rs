@@ -44,18 +44,21 @@ pub mod pallet {
     /// The keys can be inserted manually via RPC (see `author_insertKey`).
     pub const KEY_TYPE: KeyTypeId = KeyTypeId(*b"circ");
 
-    const FETCH_TIMEOUT_PERIOD: u64 = 3000; // in milli-seconds
-    const LOCK_TIMEOUT_EXPIRATION: u64 = FETCH_TIMEOUT_PERIOD + 1000; // in milli-seconds
+    const LOCK_TIMEOUT_EXPIRATION: u64 = 10000; // in milli-seconds
     const LOCK_BLOCK_EXPIRATION: u32 = 3; // in block number
 
     const ONCHAIN_TX_KEY: &[u8] = b"ocw-circuits::storage::tx";
     const LOCK_KEY: &[u8] = b"ocw-circuits::lock";
     const API_ENDPOINT_GENERIC_URL: &str =
         "/interstellarpbapicircuits.SkcdApi/GenerateSkcdGenericFromIPFS";
-    const API_ENDPOINT_DISPLAY_URL: &str =
-        "/interstellarpbapicircuits.SkcdApi/GenerateSkcdDisplay";
-    const DEFAULT_DISPLAY_WIDTH: u32 = 224;
-    const DEFAULT_DISPLAY_HEIGHT: u32 = 96;
+    const API_ENDPOINT_DISPLAY_URL: &str = "/interstellarpbapicircuits.SkcdApi/GenerateSkcdDisplay";
+    // Resolutions for the "message" mode and the "pinpad" mode
+    // There are no good/bad ones, it is only trial and error.
+    // You SHOULD use lib_circuits's cli_display_skcd to try and find good ones.
+    const DEFAULT_MESSAGE_WIDTH: u32 = 1280 / 2;
+    const DEFAULT_MESSAGE_HEIGHT: u32 = 720 / 2;
+    const DEFAULT_PINPAD_WIDTH: u32 = 590;
+    const DEFAULT_PINPAD_HEIGHT: u32 = 50;
 
     /// Based on the above `KeyTypeId` we need to generate a pallet-specific crypto type wrapper.
     /// We can utilize the supported crypto kinds (`sr25519`, `ed25519` and `ecdsa`) and augment
@@ -203,17 +206,20 @@ pub mod pallet {
                 who
             );
 
-            Self::append_or_replace_verilog_hash(Some(verilog_cid), GrpcCallKind::Generic);
+            Self::append_or_replace_verilog_hash(Some(verilog_cid), GrpcCallKind::Generic, None);
 
             Ok(())
         }
 
         #[pallet::weight(10000)]
-        pub fn submit_config_display_signed(origin: OriginFor<T>) -> DispatchResult {
+        pub fn submit_config_display_signed(
+            origin: OriginFor<T>,
+            is_message: bool,
+        ) -> DispatchResult {
             let who = ensure_signed(origin)?;
             log::info!("[ocw-circuits] submit_config_display_signed: ({:?})", who);
 
-            Self::append_or_replace_verilog_hash(None, GrpcCallKind::Display);
+            Self::append_or_replace_verilog_hash(None, GrpcCallKind::Display, Some(is_message));
 
             Ok(())
         }
@@ -266,21 +272,31 @@ pub mod pallet {
     #[derive(Debug, Deserialize, Encode, Decode, Default)]
     struct IndexingData {
         // verilog_ipfs_hash only if GrpcCallKind::Generic
-        // (For now) when it is GrpcCallKind::Display the corresponding Verilog are packaged with the api_circuits
+        // (For now) when it is GrpcCallKind::Display the corresponding Verilog are packaged in the repo api_circuits
+        // = in "display mode" the Verilog are hardcoded, NOT passed dynamically via IPFS; contrary to "generic mode"
         verilog_ipfs_hash: Option<Vec<u8>>,
         block_number: u32,
         grpc_kind: GrpcCallKind,
+        // [only if GrpcCallKind::Display]
+        // we use to have a semi-dynamic behavior, which allows to generate both "message" and "pinpad" kind of circuits
+        // Longer term, we could be fully dynamic and let the caller pass both resolution and "digit_bboxes"
+        is_message: Option<bool>,
     }
 
     impl<T: Config> Pallet<T> {
         /// Append a new number to the tail of the list, removing an element from the head if reaching
         ///   the bounded length.
-        fn append_or_replace_verilog_hash(verilog_cid: Option<Vec<u8>>, grpc_kind: GrpcCallKind) {
+        fn append_or_replace_verilog_hash(
+            verilog_cid: Option<Vec<u8>>,
+            grpc_kind: GrpcCallKind,
+            is_message: Option<bool>,
+        ) {
             let key = Self::derived_key();
             let data = IndexingData {
                 verilog_ipfs_hash: verilog_cid,
                 block_number: 1,
                 grpc_kind: grpc_kind,
+                is_message: is_message,
             };
             sp_io::offchain_index::set(&key, &data.encode());
         }
@@ -308,6 +324,7 @@ pub mod pallet {
 
             let to_process_verilog_cid = indexing_data.verilog_ipfs_hash;
             let to_process_block_number = indexing_data.block_number;
+            let to_process_is_message = indexing_data.is_message;
 
             // TODO proper job queue; or at least proper CHECK
             if to_process_block_number == 0 {
@@ -345,7 +362,9 @@ pub mod pallet {
                     GrpcCallKind::Generic => Self::call_grpc_generic(
                         &to_process_verilog_cid.expect("missing verilog_cid"),
                     ),
-                    GrpcCallKind::Display => Self::call_grpc_display(),
+                    GrpcCallKind::Display => {
+                        Self::call_grpc_display(to_process_is_message.expect("missing is_message"))
+                    }
                 };
 
                 Self::finalize_grpc_call(result_grpc_call)
@@ -390,11 +409,51 @@ pub mod pallet {
         /// Call the GRPC endpoint API_ENDPOINT_GENERIC_URL, encoding the request as grpc-web, and decoding the response
         ///
         /// return: a IPFS hash
-        fn call_grpc_display() -> Result<Vec<u8>, Error<T>> {
-            let input = crate::interstellarpbapicircuits::SkcdDisplayRequest {
-                width: DEFAULT_DISPLAY_WIDTH,
-                height: DEFAULT_DISPLAY_HEIGHT,
+        fn call_grpc_display(is_message: bool) -> Result<Vec<u8>, Error<T>> {
+            let input = if is_message {
+                crate::interstellarpbapicircuits::SkcdDisplayRequest {
+                    width: DEFAULT_MESSAGE_WIDTH,
+                    height: DEFAULT_MESSAGE_HEIGHT,
+                    digits_bboxes: vec![
+                        // first digit bbox --------------------------------------------
+                        0.25_f32, 0.1_f32, 0.45_f32, 0.9_f32,
+                        // second digit bbox -------------------------------------------
+                        0.55_f32, 0.1_f32, 0.75_f32, 0.9_f32,
+                    ],
+                }
+            } else {
+                // IMPORTANT: by convention the "pinpad" is 10 digits, placed horizontally(side by side)
+                // DO NOT change the layout, else wallet-app will NOT display the pinpad correctly!
+                // That is b/c this layout in treated as a "texture atlas" so the positions MUST be known.
+                // Ideally the positions SHOULD be passed from here all the way into the serialized .pgarbled/.packmsg
+                // but this NOT YET the case.
+
+                // 10 digits, 4 corners(vertices) per digit
+                let mut digits_bboxes: Vec<f32> = Vec::with_capacity(10 * 4);
+                /*
+                for (int i = 0; i < 10; i++) {
+                    digits_bboxes.emplace_back(0.1f * i, 0.0f, 0.1f * (i + 1), 1.0f);
+                }
+                */
+                for i in 0..10 {
+                    digits_bboxes.append(
+                        vec![
+                            0.1_f32 * i as f32,
+                            0.0_f32,
+                            0.1_f32 * (i + 1) as f32,
+                            1.0_f32,
+                        ]
+                        .as_mut(),
+                    );
+                }
+
+                crate::interstellarpbapicircuits::SkcdDisplayRequest {
+                    width: DEFAULT_PINPAD_WIDTH,
+                    height: DEFAULT_PINPAD_HEIGHT,
+                    digits_bboxes: digits_bboxes,
+                }
             };
+
             let body_bytes = ocw_common::encode_body(input);
 
             // construct the full endpoint URI using:

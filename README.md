@@ -27,6 +27,11 @@ Since this repository is based on Substrate Node Template,
 [it's README](https://github.com/substrate-developer-hub/substrate-node-template/blob/v3.0.0%2Bmonthly-2021-10/README.md)
 applies to this repository as well.
 
+4. Use a front-end eg
+- https://polkadot.js.org/apps/#/extrinsics
+- NO! https://substrate-developer-hub.github.io/substrate-front-end-template/?rpc=ws://localhost:9944
+  - apparently not correctly handling "bool" parameters for extrinsic; It still works but you can not test all the cases...
+
 ### Dev
 
 For faster iteration:

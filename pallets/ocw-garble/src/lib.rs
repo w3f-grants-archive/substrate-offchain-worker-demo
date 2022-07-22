@@ -43,8 +43,7 @@ pub mod pallet {
     /// The keys can be inserted manually via RPC (see `author_insertKey`).
     pub const KEY_TYPE: KeyTypeId = KeyTypeId(*b"garb");
 
-    const FETCH_TIMEOUT_PERIOD: u64 = 3000; // in milli-seconds
-    const LOCK_TIMEOUT_EXPIRATION: u64 = FETCH_TIMEOUT_PERIOD + 1000; // in milli-seconds
+    const LOCK_TIMEOUT_EXPIRATION: u64 = 10000; // in milli-seconds
     const LOCK_BLOCK_EXPIRATION: u32 = 3; // in block number
 
     const ONCHAIN_TX_KEY: &[u8] = b"ocw-garble::storage::tx";
