@@ -114,18 +114,36 @@ pub mod pallet {
         type AuthorityId: AppCrypto<Self::Public, Self::Signature>;
     }
 
+    #[derive(
+        Clone,
+        Encode,
+        Decode,
+        Eq,
+        PartialEq,
+        RuntimeDebug,
+        Default,
+        scale_info::TypeInfo,
+        MaxEncodedLen,
+    )]
+    pub struct StrippedCircuitPackage {
+        // 32 b/c IPFS hash is 256 bits = 32 bytes
+        // But due to encoding(??) in practice it is 46 bytes(checked with debugger), and we take some margin
+        pgarbled_cid: BoundedVec<u8, ConstU32<64>>,
+        packmsg_cid: BoundedVec<u8, ConstU32<64>>,
+    }
+    type PendingCircuitsType = BoundedVec<StrippedCircuitPackage,ConstU32<MAX_NUMBER_PENDING_CIRCUITS_PER_ACCOUNT>,>;
+
     /// Store account_id -> list(ipfs_cids);
     /// That represents the "list of pending txs" for a given Account
+    const MAX_NUMBER_PENDING_CIRCUITS_PER_ACCOUNT: u32 = 16;
     #[pallet::storage]
     #[pallet::getter(fn get_pending_circuits_for_account)]
     pub(super) type AccountToPendingCircuitsMap<T: Config> = StorageMap<
         _,
         Twox128,
-        // key: (AccountId, IPFS hash)
-        // 32 b/c IPFS hash is 256 bits = 32 bytes
-        // But due to encoding(??) in practice it is 46 bytes(checked with debugger)
-        (T::AccountId,),
-        (BoundedVec<u8, ConstU32<64>>,),
+        // key: AccountId
+        T::AccountId,
+        PendingCircuitsType,
         ValueQuery,
     >;
 
@@ -274,7 +292,7 @@ pub mod pallet {
 
             Self::deposit_event(Event::NewGarbleAndStrippedIpfsCid(
                 pgarbled_cid.clone(),
-                packmsg_cid,
+                packmsg_cid.clone(),
             ));
 
             // store the metadata using the pallet-tx-validation
@@ -291,12 +309,16 @@ pub mod pallet {
             );
 
             // and update our internal map of pending circuits for the given account
-            // this is used via RPC by the app, not directly!
-            // TODO append if exists, or create new Vec if not!
-            <AccountToPendingCircuitsMap<T>>::insert(
-                (who,),
-                (TryInto::<BoundedVec<u8, ConstU32<64>>>::try_into(pgarbled_cid).unwrap(),),
-            );
+            // this is USED via RPC by the app, not directly!
+            // "append if exists, create if not"
+            // TODO done in two steps, is there a way to do it atomically?
+            let mut current_pending_circuits: PendingCircuitsType  = <AccountToPendingCircuitsMap<T>>::try_get(&who).unwrap_or_default();
+            current_pending_circuits.try_push(StrippedCircuitPackage {
+                pgarbled_cid: TryInto::<BoundedVec<u8, ConstU32<64>>>::try_into(pgarbled_cid).unwrap(),
+                packmsg_cid: TryInto::<BoundedVec<u8, ConstU32<64>>>::try_into(packmsg_cid).unwrap(),
+            }).unwrap();
+            <AccountToPendingCircuitsMap<T>>::insert(who, current_pending_circuits);
+
 
             Ok(())
         }
