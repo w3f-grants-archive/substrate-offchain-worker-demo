@@ -31,7 +31,6 @@ pub mod pallet {
     use sp_runtime::transaction_validity::InvalidTransaction;
     use sp_runtime::RuntimeDebug;
     use sp_std::borrow::ToOwned;
-    use sp_std::cell::RefCell;
     use sp_std::str;
     use sp_std::vec::Vec;
 
@@ -118,6 +117,33 @@ pub mod pallet {
         type AuthorityId: AppCrypto<Self::Public, Self::Signature>;
     }
 
+    /// Easy way to make a link b/w a "message" and "pinpad" circuits
+    /// that way we can have ONE extrinsic that generates both in one call
+    #[derive(
+        Clone,
+        Encode,
+        Decode,
+        Eq,
+        PartialEq,
+        RuntimeDebug,
+        Default,
+        scale_info::TypeInfo,
+        MaxEncodedLen,
+    )]
+    pub struct DisplayCircuitsPackage {
+        // 32 b/c IPFS hash is 256 bits = 32 bytes
+        // But due to encoding(??) in practice it is 46 bytes(checked with debugger), and we take some margin
+        message_skcd_cid: BoundedVec<u8, ConstU32<64>>,
+        pinpad_skcd_cid: BoundedVec<u8, ConstU32<64>>,
+    }
+
+    /// For now it will be stored as a StorageValue but later we could use
+    /// a map for various resolutions, kind of digits(7 segments vs other?), etc
+    const MAX_NUMBER_PENDING_CIRCUITS_PER_ACCOUNT: u32 = 16;
+    #[pallet::storage]
+    pub(super) type DisplayCircuitsPackageValue<T: Config> =
+        StorageValue<_, DisplayCircuitsPackage, ValueQuery>;
+
     #[pallet::pallet]
     #[pallet::generate_store(pub(super) trait Store)]
     pub struct Pallet<T>(_);
@@ -127,6 +153,8 @@ pub mod pallet {
     pub enum Event<T: Config> {
         // Sent at the end of the offchain_worker(ie it is an OUTPUT)
         NewSkcdIpfsCid(Vec<u8>),
+        // Display version: one IPFS cid for the message, one IPFS cid for the pinpad
+        NewDisplayCircuitsPackageIpfsCid(Vec<u8>, Vec<u8>),
     }
 
     // Errors inform users that something went wrong.
@@ -206,20 +234,22 @@ pub mod pallet {
                 who
             );
 
-            Self::append_or_replace_verilog_hash(Some(verilog_cid), GrpcCallKind::Generic, None);
+            Self::append_or_replace_verilog_hash(Some(verilog_cid), GrpcCallKind::Generic);
 
             Ok(())
         }
 
         #[pallet::weight(10000)]
-        pub fn submit_config_display_signed(
+        pub fn submit_config_display_circuits_package_signed(
             origin: OriginFor<T>,
-            is_message: bool,
         ) -> DispatchResult {
             let who = ensure_signed(origin)?;
-            log::info!("[ocw-circuits] submit_config_display_signed: ({:?})", who);
+            log::info!(
+                "[ocw-circuits] submit_config_display_circuits_package_signed: ({:?})",
+                who
+            );
 
-            Self::append_or_replace_verilog_hash(None, GrpcCallKind::Display, Some(is_message));
+            Self::append_or_replace_verilog_hash(None, GrpcCallKind::Display);
 
             Ok(())
         }
@@ -231,12 +261,42 @@ pub mod pallet {
         pub fn callback_new_skcd_signed(origin: OriginFor<T>, skcd_cid: Vec<u8>) -> DispatchResult {
             let who = ensure_signed(origin)?;
             log::info!(
-                "[ocw-garble] callback_new_skcd_signed: ({:?},{:?})",
+                "[ocw-circuits] callback_new_skcd_signed: ({:?},{:?})",
                 sp_std::str::from_utf8(&skcd_cid).expect("skcd_cid utf8"),
                 who
             );
 
             Self::deposit_event(Event::NewSkcdIpfsCid(skcd_cid));
+            Ok(())
+        }
+
+        #[pallet::weight(10000)]
+        pub fn callback_new_display_circuits_package_signed(
+            origin: OriginFor<T>,
+            message_cid: Vec<u8>,
+            pinpad_cid: Vec<u8>,
+        ) -> DispatchResult {
+            let who = ensure_signed(origin.clone())?;
+            log::info!(
+                "[ocw-circuits] callback_new_display_circuits_package_signed: ({:?},{:?} for {:?})",
+                sp_std::str::from_utf8(&message_cid).expect("skcd_cid utf8"),
+                sp_std::str::from_utf8(&pinpad_cid).expect("skcd_cid utf8"),
+                who
+            );
+
+            Self::deposit_event(Event::NewDisplayCircuitsPackageIpfsCid(
+                message_cid.clone(),
+                pinpad_cid.clone(),
+            ));
+
+            // and update the current "reference" circuits package
+            <DisplayCircuitsPackageValue<T>>::set(DisplayCircuitsPackage {
+                message_skcd_cid: TryInto::<BoundedVec<u8, ConstU32<64>>>::try_into(message_cid)
+                    .unwrap(),
+                pinpad_skcd_cid: TryInto::<BoundedVec<u8, ConstU32<64>>>::try_into(pinpad_cid)
+                    .unwrap(),
+            });
+
             Ok(())
         }
     }
@@ -269,6 +329,12 @@ pub mod pallet {
         }
     }
 
+    // reply type for each GrpcCallKind
+    enum GrpcCallReplyKind {
+        Generic(crate::interstellarpbapicircuits::SkcdGenericFromIpfsReply),
+        Display(crate::interstellarpbapicircuits::SkcdDisplayReply),
+    }
+
     #[derive(Debug, Deserialize, Encode, Decode, Default)]
     struct IndexingData {
         // verilog_ipfs_hash only if GrpcCallKind::Generic
@@ -277,26 +343,17 @@ pub mod pallet {
         verilog_ipfs_hash: Option<Vec<u8>>,
         block_number: u32,
         grpc_kind: GrpcCallKind,
-        // [only if GrpcCallKind::Display]
-        // we use to have a semi-dynamic behavior, which allows to generate both "message" and "pinpad" kind of circuits
-        // Longer term, we could be fully dynamic and let the caller pass both resolution and "digit_bboxes"
-        is_message: Option<bool>,
     }
 
     impl<T: Config> Pallet<T> {
         /// Append a new number to the tail of the list, removing an element from the head if reaching
         ///   the bounded length.
-        fn append_or_replace_verilog_hash(
-            verilog_cid: Option<Vec<u8>>,
-            grpc_kind: GrpcCallKind,
-            is_message: Option<bool>,
-        ) {
+        fn append_or_replace_verilog_hash(verilog_cid: Option<Vec<u8>>, grpc_kind: GrpcCallKind) {
             let key = Self::derived_key();
             let data = IndexingData {
                 verilog_ipfs_hash: verilog_cid,
                 block_number: 1,
                 grpc_kind: grpc_kind,
-                is_message: is_message,
             };
             sp_io::offchain_index::set(&key, &data.encode());
         }
@@ -324,7 +381,6 @@ pub mod pallet {
 
             let to_process_verilog_cid = indexing_data.verilog_ipfs_hash;
             let to_process_block_number = indexing_data.block_number;
-            let to_process_is_message = indexing_data.is_message;
 
             // TODO proper job queue; or at least proper CHECK
             if to_process_block_number == 0 {
@@ -362,9 +418,7 @@ pub mod pallet {
                     GrpcCallKind::Generic => Self::call_grpc_generic(
                         &to_process_verilog_cid.expect("missing verilog_cid"),
                     ),
-                    GrpcCallKind::Display => {
-                        Self::call_grpc_display(to_process_is_message.expect("missing is_message"))
-                    }
+                    GrpcCallKind::Display => Self::call_grpc_display(true),
                 };
 
                 Self::finalize_grpc_call(result_grpc_call)
@@ -375,7 +429,7 @@ pub mod pallet {
         /// Call the GRPC endpoint API_ENDPOINT_GENERIC_URL, encoding the request as grpc-web, and decoding the response
         ///
         /// return: a IPFS hash
-        fn call_grpc_generic(verilog_cid: &Vec<u8>) -> Result<Vec<u8>, Error<T>> {
+        fn call_grpc_generic(verilog_cid: &Vec<u8>) -> Result<GrpcCallReplyKind, Error<T>> {
             let verilog_cid_str = sp_std::str::from_utf8(&verilog_cid)
                 .expect("call_grpc_generic from_utf8")
                 .to_owned();
@@ -403,13 +457,13 @@ pub mod pallet {
                 crate::interstellarpbapicircuits::SkcdGenericFromIpfsReply,
                 _,
             ) = ocw_common::decode_body(resp_bytes, resp_content_type);
-            Ok(resp.skcd_cid.bytes().collect())
+            Ok(GrpcCallReplyKind::Generic(resp))
         }
 
         /// Call the GRPC endpoint API_ENDPOINT_GENERIC_URL, encoding the request as grpc-web, and decoding the response
         ///
         /// return: a IPFS hash
-        fn call_grpc_display(is_message: bool) -> Result<Vec<u8>, Error<T>> {
+        fn call_grpc_display(is_message: bool) -> Result<GrpcCallReplyKind, Error<T>> {
             let input = if is_message {
                 crate::interstellarpbapicircuits::SkcdDisplayRequest {
                     width: DEFAULT_MESSAGE_WIDTH,
@@ -473,26 +527,16 @@ pub mod pallet {
 
             let (resp, _trailers): (crate::interstellarpbapicircuits::SkcdDisplayReply, _) =
                 ocw_common::decode_body(resp_bytes, resp_content_type);
-            Ok(resp.skcd_cid.bytes().collect())
+            Ok(GrpcCallReplyKind::Display(resp))
         }
 
         /// Called at the end of process_if_needed/offchain_worker
         /// Publish the result back via send_signed_transaction(and Event)
         ///
         /// param: result_grpc_call: returned by call_grpc_display/call_grpc_generic
-        fn finalize_grpc_call(result_grpc_call: Result<Vec<u8>, Error<T>>) {
+        fn finalize_grpc_call(result_grpc_call: Result<GrpcCallReplyKind, Error<T>>) {
             match result_grpc_call {
-                Ok(result_ipfs_hash) => {
-                    let result_ipfs_hash_str = str::from_utf8(&result_ipfs_hash)
-                        .map_err(|_| <Error<T>>::DeserializeToStrError);
-                    log::info!(
-                        "[ocw-circuits] call_grpc_display FINAL got result IPFS hash : {:x?}",
-                        result_ipfs_hash_str
-                    );
-
-                    // "We have to borrow the data to capture it in the transaction"
-                    let ref_result_ipfs_hash = RefCell::new(result_ipfs_hash);
-
+                Ok(result_reply) => {
                     // Using `send_signed_transaction` associated type we create and submit a transaction
                     // representing the call we've just created.
                     // `send_signed_transaction()` return type is `Option<(Account<T>, Result<(), ()>)>`. It is:
@@ -503,10 +547,19 @@ pub mod pallet {
                     if !signer.can_sign() {
                         log::error!("[ocw-circuits] No local accounts available. Consider adding one via `author_insertKey` RPC[ALTERNATIVE DEV ONLY check 'if config.offchain_worker.enabled' in service.rs]");
                     }
-                    let results =
-                        signer.send_signed_transaction(|_account| Call::callback_new_skcd_signed {
-                            skcd_cid: ref_result_ipfs_hash.borrow().into_mut().to_vec(),
-                        });
+
+                    let results = signer.send_signed_transaction(|_account| match &result_reply {
+                        GrpcCallReplyKind::Generic(reply) => Call::callback_new_skcd_signed {
+                            skcd_cid: reply.skcd_cid.bytes().collect(),
+                        },
+                        GrpcCallReplyKind::Display(reply) => {
+                            Call::callback_new_display_circuits_package_signed {
+                                message_cid: reply.skcd_cid.bytes().collect(),
+                                pinpad_cid: reply.skcd_cid.bytes().collect(),
+                            }
+                        }
+                    });
+
                     log::info!(
                         "[ocw-circuits] callback_new_skcd_signed sent number : {:#?}",
                         results.len()

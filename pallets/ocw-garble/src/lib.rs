@@ -131,7 +131,8 @@ pub mod pallet {
         pgarbled_cid: BoundedVec<u8, ConstU32<64>>,
         packmsg_cid: BoundedVec<u8, ConstU32<64>>,
     }
-    type PendingCircuitsType = BoundedVec<StrippedCircuitPackage,ConstU32<MAX_NUMBER_PENDING_CIRCUITS_PER_ACCOUNT>,>;
+    type PendingCircuitsType =
+        BoundedVec<StrippedCircuitPackage, ConstU32<MAX_NUMBER_PENDING_CIRCUITS_PER_ACCOUNT>>;
 
     /// Store account_id -> list(ipfs_cids);
     /// That represents the "list of pending txs" for a given Account
@@ -312,13 +313,17 @@ pub mod pallet {
             // this is USED via RPC by the app, not directly!
             // "append if exists, create if not"
             // TODO done in two steps, is there a way to do it atomically?
-            let mut current_pending_circuits: PendingCircuitsType  = <AccountToPendingCircuitsMap<T>>::try_get(&who).unwrap_or_default();
-            current_pending_circuits.try_push(StrippedCircuitPackage {
-                pgarbled_cid: TryInto::<BoundedVec<u8, ConstU32<64>>>::try_into(pgarbled_cid).unwrap(),
-                packmsg_cid: TryInto::<BoundedVec<u8, ConstU32<64>>>::try_into(packmsg_cid).unwrap(),
-            }).unwrap();
+            let mut current_pending_circuits: PendingCircuitsType =
+                <AccountToPendingCircuitsMap<T>>::try_get(&who).unwrap_or_default();
+            current_pending_circuits
+                .try_push(StrippedCircuitPackage {
+                    pgarbled_cid: TryInto::<BoundedVec<u8, ConstU32<64>>>::try_into(pgarbled_cid)
+                        .unwrap(),
+                    packmsg_cid: TryInto::<BoundedVec<u8, ConstU32<64>>>::try_into(packmsg_cid)
+                        .unwrap(),
+                })
+                .unwrap();
             <AccountToPendingCircuitsMap<T>>::insert(who, current_pending_circuits);
-
 
             Ok(())
         }
@@ -539,6 +544,7 @@ pub mod pallet {
                     if !signer.can_sign() {
                         log::error!("[ocw-garble] No local accounts available. Consider adding one via `author_insertKey` RPC[ALTERNATIVE DEV ONLY check 'if config.offchain_worker.enabled' in service.rs]");
                     }
+
                     let results = signer.send_signed_transaction(|_account| match &result_reply {
                         GrpcCallReplyKind::GarbleStandard(reply) => {
                             Call::callback_new_garbled_signed {
