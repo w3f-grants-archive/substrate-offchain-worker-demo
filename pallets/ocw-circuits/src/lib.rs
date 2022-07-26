@@ -95,18 +95,6 @@ pub mod pallet {
         }
     }
 
-    #[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug, scale_info::TypeInfo)]
-    pub struct Payload<Public> {
-        verilog_cid: Vec<u8>,
-        public: Public,
-    }
-
-    impl<T: SigningTypes> SignedPayload<T> for Payload<T::Public> {
-        fn public(&self) -> T::Public {
-            self.public.clone()
-        }
-    }
-
     #[pallet::config]
     pub trait Config: frame_system::Config + CreateSignedTransaction<Call<Self>> {
         /// The overarching event type.
@@ -154,7 +142,7 @@ pub mod pallet {
         // Sent at the end of the offchain_worker(ie it is an OUTPUT)
         NewSkcdIpfsCid(Vec<u8>),
         // Display version: one IPFS cid for the message, one IPFS cid for the pinpad
-        NewDisplayCircuitsPackageIpfsCid(Vec<u8>, Vec<u8>),
+        NewDisplayCircuitsPackageIpfsCid(Vec<u8>, bool),
     }
 
     // Errors inform users that something went wrong.
@@ -234,7 +222,7 @@ pub mod pallet {
                 who
             );
 
-            Self::append_or_replace_verilog_hash(Some(verilog_cid), GrpcCallKind::Generic);
+            Self::append_or_replace_verilog_hash(Some(verilog_cid), GrpcCallKind::Generic, None);
 
             Ok(())
         }
@@ -242,6 +230,7 @@ pub mod pallet {
         #[pallet::weight(10000)]
         pub fn submit_config_display_circuits_package_signed(
             origin: OriginFor<T>,
+            is_message: bool,
         ) -> DispatchResult {
             let who = ensure_signed(origin)?;
             log::info!(
@@ -249,7 +238,7 @@ pub mod pallet {
                 who
             );
 
-            Self::append_or_replace_verilog_hash(None, GrpcCallKind::Display);
+            Self::append_or_replace_verilog_hash(None, GrpcCallKind::Display, Some(is_message));
 
             Ok(())
         }
@@ -273,29 +262,35 @@ pub mod pallet {
         #[pallet::weight(10000)]
         pub fn callback_new_display_circuits_package_signed(
             origin: OriginFor<T>,
-            message_cid: Vec<u8>,
-            pinpad_cid: Vec<u8>,
+            skcd_cid: Vec<u8>,
+            is_message: bool,
         ) -> DispatchResult {
             let who = ensure_signed(origin.clone())?;
             log::info!(
                 "[ocw-circuits] callback_new_display_circuits_package_signed: ({:?},{:?} for {:?})",
-                sp_std::str::from_utf8(&message_cid).expect("skcd_cid utf8"),
-                sp_std::str::from_utf8(&pinpad_cid).expect("skcd_cid utf8"),
+                sp_std::str::from_utf8(&skcd_cid).expect("skcd_cid utf8"),
+                is_message,
                 who
             );
 
             Self::deposit_event(Event::NewDisplayCircuitsPackageIpfsCid(
-                message_cid.clone(),
-                pinpad_cid.clone(),
+                skcd_cid.clone(),
+                is_message,
             ));
 
             // and update the current "reference" circuits package
-            <DisplayCircuitsPackageValue<T>>::set(DisplayCircuitsPackage {
-                message_skcd_cid: TryInto::<BoundedVec<u8, ConstU32<64>>>::try_into(message_cid)
-                    .unwrap(),
-                pinpad_skcd_cid: TryInto::<BoundedVec<u8, ConstU32<64>>>::try_into(pinpad_cid)
-                    .unwrap(),
-            });
+            // done in two steps:
+            // - get the current value
+            // - update one of its two fields based on the value of "is_message"
+            let mut current_value = <DisplayCircuitsPackageValue<T>>::get();
+            if is_message {
+                current_value.message_skcd_cid =
+                    TryInto::<BoundedVec<u8, ConstU32<64>>>::try_into(skcd_cid).unwrap();
+            } else {
+                current_value.pinpad_skcd_cid =
+                    TryInto::<BoundedVec<u8, ConstU32<64>>>::try_into(skcd_cid).unwrap();
+            }
+            <DisplayCircuitsPackageValue<T>>::set(current_value);
 
             Ok(())
         }
@@ -332,7 +327,7 @@ pub mod pallet {
     // reply type for each GrpcCallKind
     enum GrpcCallReplyKind {
         Generic(crate::interstellarpbapicircuits::SkcdGenericFromIpfsReply),
-        Display(crate::interstellarpbapicircuits::SkcdDisplayReply),
+        Display(crate::interstellarpbapicircuits::SkcdDisplayReply, bool),
     }
 
     #[derive(Debug, Deserialize, Encode, Decode, Default)]
@@ -343,17 +338,23 @@ pub mod pallet {
         verilog_ipfs_hash: Option<Vec<u8>>,
         block_number: u32,
         grpc_kind: GrpcCallKind,
+        is_message: Option<bool>,
     }
 
     impl<T: Config> Pallet<T> {
         /// Append a new number to the tail of the list, removing an element from the head if reaching
         ///   the bounded length.
-        fn append_or_replace_verilog_hash(verilog_cid: Option<Vec<u8>>, grpc_kind: GrpcCallKind) {
+        fn append_or_replace_verilog_hash(
+            verilog_cid: Option<Vec<u8>>,
+            grpc_kind: GrpcCallKind,
+            is_message: Option<bool>,
+        ) {
             let key = Self::derived_key();
             let data = IndexingData {
                 verilog_ipfs_hash: verilog_cid,
                 block_number: 1,
                 grpc_kind: grpc_kind,
+                is_message: is_message,
             };
             sp_io::offchain_index::set(&key, &data.encode());
         }
@@ -381,6 +382,7 @@ pub mod pallet {
 
             let to_process_verilog_cid = indexing_data.verilog_ipfs_hash;
             let to_process_block_number = indexing_data.block_number;
+            let to_process_is_message = indexing_data.is_message;
 
             // TODO proper job queue; or at least proper CHECK
             if to_process_block_number == 0 {
@@ -418,7 +420,9 @@ pub mod pallet {
                     GrpcCallKind::Generic => Self::call_grpc_generic(
                         &to_process_verilog_cid.expect("missing verilog_cid"),
                     ),
-                    GrpcCallKind::Display => Self::call_grpc_display(true),
+                    GrpcCallKind::Display => {
+                        Self::call_grpc_display(to_process_is_message.expect("missing is_message"))
+                    }
                 };
 
                 Self::finalize_grpc_call(result_grpc_call)
@@ -527,7 +531,7 @@ pub mod pallet {
 
             let (resp, _trailers): (crate::interstellarpbapicircuits::SkcdDisplayReply, _) =
                 ocw_common::decode_body(resp_bytes, resp_content_type);
-            Ok(GrpcCallReplyKind::Display(resp))
+            Ok(GrpcCallReplyKind::Display(resp, is_message))
         }
 
         /// Called at the end of process_if_needed/offchain_worker
@@ -552,10 +556,10 @@ pub mod pallet {
                         GrpcCallReplyKind::Generic(reply) => Call::callback_new_skcd_signed {
                             skcd_cid: reply.skcd_cid.bytes().collect(),
                         },
-                        GrpcCallReplyKind::Display(reply) => {
+                        GrpcCallReplyKind::Display(reply, is_message) => {
                             Call::callback_new_display_circuits_package_signed {
-                                message_cid: reply.skcd_cid.bytes().collect(),
-                                pinpad_cid: reply.skcd_cid.bytes().collect(),
+                                skcd_cid: reply.skcd_cid.bytes().collect(),
+                                is_message: *is_message,
                             }
                         }
                     });
