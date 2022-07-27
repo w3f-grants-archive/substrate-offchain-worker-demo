@@ -16,9 +16,7 @@ pub mod pallet {
     use frame_system::offchain::AppCrypto;
     use frame_system::offchain::CreateSignedTransaction;
     use frame_system::offchain::SendSignedTransaction;
-    use frame_system::offchain::SignedPayload;
     use frame_system::offchain::Signer;
-    use frame_system::offchain::SigningTypes;
     use frame_system::pallet_prelude::*;
     use scale_info::prelude::*;
     use serde::Deserialize;
@@ -118,19 +116,20 @@ pub mod pallet {
         scale_info::TypeInfo,
         MaxEncodedLen,
     )]
-    pub struct DisplayCircuitsPackage {
+    pub struct DisplaySkcdPackage {
         // 32 b/c IPFS hash is 256 bits = 32 bytes
         // But due to encoding(??) in practice it is 46 bytes(checked with debugger), and we take some margin
-        message_skcd_cid: BoundedVec<u8, ConstU32<64>>,
-        pinpad_skcd_cid: BoundedVec<u8, ConstU32<64>>,
+        pub message_skcd_cid: BoundedVec<u8, ConstU32<64>>,
+        pub message_skcd_server_metadata_nb_digits: u32,
+        pub pinpad_skcd_cid: BoundedVec<u8, ConstU32<64>>,
+        pub pinpad_skcd_server_metadata_nb_digits: u32,
     }
 
     /// For now it will be stored as a StorageValue but later we could use
     /// a map for various resolutions, kind of digits(7 segments vs other?), etc
-    const MAX_NUMBER_PENDING_CIRCUITS_PER_ACCOUNT: u32 = 16;
     #[pallet::storage]
-    pub(super) type DisplayCircuitsPackageValue<T: Config> =
-        StorageValue<_, DisplayCircuitsPackage, ValueQuery>;
+    pub(super) type DisplaySkcdPackageValue<T: Config> =
+        StorageValue<_, DisplaySkcdPackage, ValueQuery>;
 
     #[pallet::pallet]
     #[pallet::generate_store(pub(super) trait Store)]
@@ -142,7 +141,7 @@ pub mod pallet {
         // Sent at the end of the offchain_worker(ie it is an OUTPUT)
         NewSkcdIpfsCid(Vec<u8>),
         // Display version: one IPFS cid for the message, one IPFS cid for the pinpad
-        NewDisplayCircuitsPackageIpfsCid(Vec<u8>, bool),
+        NewDisplaySkcdPackageIpfsCid(Vec<u8>, bool),
     }
 
     // Errors inform users that something went wrong.
@@ -187,6 +186,13 @@ pub mod pallet {
             if let Err(e) = result {
                 log::error!("[ocw-circuits] offchain_worker error: {:?}", e);
             }
+        }
+    }
+
+    impl<T: Config> Pallet<T> {
+        pub fn get_display_circuits_package() -> DisplaySkcdPackage {
+            <DisplaySkcdPackageValue<T>>::get()
+            // TODO return Result, and error-out if both fields are not set
         }
     }
 
@@ -263,17 +269,19 @@ pub mod pallet {
         pub fn callback_new_display_circuits_package_signed(
             origin: OriginFor<T>,
             skcd_cid: Vec<u8>,
+            nb_digits: u32,
             is_message: bool,
         ) -> DispatchResult {
             let who = ensure_signed(origin.clone())?;
             log::info!(
-                "[ocw-circuits] callback_new_display_circuits_package_signed: ({:?},{:?} for {:?})",
+                "[ocw-circuits] callback_new_display_circuits_package_signed: ({:?},{:?},{:?} for {:?})",
                 sp_std::str::from_utf8(&skcd_cid).expect("skcd_cid utf8"),
+                nb_digits,
                 is_message,
                 who
             );
 
-            Self::deposit_event(Event::NewDisplayCircuitsPackageIpfsCid(
+            Self::deposit_event(Event::NewDisplaySkcdPackageIpfsCid(
                 skcd_cid.clone(),
                 is_message,
             ));
@@ -282,15 +290,17 @@ pub mod pallet {
             // done in two steps:
             // - get the current value
             // - update one of its two fields based on the value of "is_message"
-            let mut current_value = <DisplayCircuitsPackageValue<T>>::get();
+            let mut current_value = <DisplaySkcdPackageValue<T>>::get();
             if is_message {
                 current_value.message_skcd_cid =
                     TryInto::<BoundedVec<u8, ConstU32<64>>>::try_into(skcd_cid).unwrap();
+                current_value.message_skcd_server_metadata_nb_digits = nb_digits;
             } else {
                 current_value.pinpad_skcd_cid =
                     TryInto::<BoundedVec<u8, ConstU32<64>>>::try_into(skcd_cid).unwrap();
+                current_value.pinpad_skcd_server_metadata_nb_digits = nb_digits;
             }
-            <DisplayCircuitsPackageValue<T>>::set(current_value);
+            <DisplaySkcdPackageValue<T>>::set(current_value);
 
             Ok(())
         }
@@ -559,6 +569,7 @@ pub mod pallet {
                         GrpcCallReplyKind::Display(reply, is_message) => {
                             Call::callback_new_display_circuits_package_signed {
                                 skcd_cid: reply.skcd_cid.bytes().collect(),
+                                nb_digits: reply.server_metadata.as_ref().unwrap().nb_digits,
                                 is_message: *is_message,
                             }
                         }

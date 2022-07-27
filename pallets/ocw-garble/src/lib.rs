@@ -12,14 +12,16 @@ pub use pallet::*;
 pub mod pallet {
     use codec::{Decode, Encode};
     use frame_support::pallet_prelude::*;
+    use frame_support::traits::Randomness;
     use frame_system::ensure_signed;
     use frame_system::offchain::AppCrypto;
     use frame_system::offchain::CreateSignedTransaction;
     use frame_system::offchain::SendSignedTransaction;
-    use frame_system::offchain::SignedPayload;
     use frame_system::offchain::Signer;
-    use frame_system::offchain::SigningTypes;
     use frame_system::pallet_prelude::*;
+    use rand::seq::SliceRandom;
+    use rand::Rng;
+    use rand_chacha::{rand_core::SeedableRng, ChaChaRng};
     use scale_info::prelude::*;
     use serde::Deserialize;
     use sp_core::crypto::KeyTypeId;
@@ -88,23 +90,14 @@ pub mod pallet {
         }
     }
 
-    #[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug, scale_info::TypeInfo)]
-    pub struct Payload<Public> {
-        skcd_cid: Vec<u8>,
-        public: Public,
-    }
-
-    impl<T: SigningTypes> SignedPayload<T> for Payload<T::Public> {
-        fn public(&self) -> T::Public {
-            self.public.clone()
-        }
-    }
-
     // NOTE: pallet_tx_validation::Config b/c we want to Call its extrinsics from the internal extrinsics
     // (callback from offchain_worker)
     #[pallet::config]
     pub trait Config:
-        frame_system::Config + CreateSignedTransaction<Call<Self>> + pallet_tx_validation::Config
+        frame_system::Config
+        + CreateSignedTransaction<Call<Self>>
+        + pallet_tx_validation::Config
+        + pallet_ocw_circuits::Config
     {
         /// The overarching event type.
         type Event: From<Event<Self>> + IsType<<Self as frame_system::Config>::Event>;
@@ -112,8 +105,13 @@ pub mod pallet {
         type Call: From<Call<Self>>;
         /// The identifier type for an offchain worker.
         type AuthorityId: AppCrypto<Self::Public, Self::Signature>;
+        type MyRandomness: Randomness<Self::Hash, Self::BlockNumber>;
     }
 
+    /// Easy way to make a link b/w a "message" and "pinpad" circuits
+    /// that way we can have ONE extrinsic that generates both in one call
+    ///
+    /// It SHOULD roughly mirror pallet_ocw_circuits::DisplaySkcdPackage
     #[derive(
         Clone,
         Encode,
@@ -125,14 +123,19 @@ pub mod pallet {
         scale_info::TypeInfo,
         MaxEncodedLen,
     )]
-    pub struct StrippedCircuitPackage {
+    pub struct DisplayStrippedCircuitsPackage {
         // 32 b/c IPFS hash is 256 bits = 32 bytes
         // But due to encoding(??) in practice it is 46 bytes(checked with debugger), and we take some margin
-        pgarbled_cid: BoundedVec<u8, ConstU32<64>>,
-        packmsg_cid: BoundedVec<u8, ConstU32<64>>,
+        pub message_pgarbled_cid: BoundedVec<u8, ConstU32<64>>,
+        pub message_packmsg_cid: BoundedVec<u8, ConstU32<64>>,
+        pub pinpad_pgarbled_cid: BoundedVec<u8, ConstU32<64>>,
+        pub pinpad_packmsg_cid: BoundedVec<u8, ConstU32<64>>,
     }
-    type PendingCircuitsType =
-        BoundedVec<StrippedCircuitPackage, ConstU32<MAX_NUMBER_PENDING_CIRCUITS_PER_ACCOUNT>>;
+
+    type PendingCircuitsType = BoundedVec<
+        DisplayStrippedCircuitsPackage,
+        ConstU32<MAX_NUMBER_PENDING_CIRCUITS_PER_ACCOUNT>,
+    >;
 
     /// Store account_id -> list(ipfs_cids);
     /// That represents the "list of pending txs" for a given Account
@@ -148,6 +151,9 @@ pub mod pallet {
         ValueQuery,
     >;
 
+    #[pallet::storage]
+    pub(super) type Nonce<T: Config> = StorageValue<_, u64, ValueQuery>;
+
     #[pallet::pallet]
     #[pallet::generate_store(pub(super) trait Store)]
     pub struct Pallet<T>(_);
@@ -157,8 +163,8 @@ pub mod pallet {
     pub enum Event<T: Config> {
         // Sent at the end of the offchain_worker(ie it is an OUTPUT)
         NewGarbledIpfsCid(Vec<u8>),
-        // Strip version: one IPFS cid for the circuit, one IPFS cid for the packmsg
-        NewGarbleAndStrippedIpfsCid(Vec<u8>, Vec<u8>),
+        // Strip version: (one IPFS cid for the circuit, one IPFS cid for the packmsg), for both mesage and pinpad
+        NewGarbleAndStrippedIpfsCid(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>),
     }
 
     // Errors inform users that something went wrong.
@@ -223,6 +229,30 @@ pub mod pallet {
         }
     }
 
+    impl<T: Config> Pallet<T> {
+        fn get_and_increment_nonce() -> Vec<u8> {
+            let nonce = <Nonce<T>>::get();
+            <Nonce<T>>::put(nonce.wrapping_add(1));
+            nonce.encode()
+        }
+    }
+
+    // TODO SHOULD be equally weighted!
+    // fn u8_to_digit(input: &u8) -> u8 {
+    //     match input {
+    //         0..=25 => 0,
+    //         26..=50 => 1,
+    //         51..=75 => 2,
+    //         76..=100 => 3,
+    //         101..=125 => 4,
+    //         126..=150 => 5,
+    //         151..=175 => 6,
+    //         176..=200 => 7,
+    //         201..=225 => 8,
+    //         226..=255 => 9,
+    //     }
+    // }
+
     #[pallet::call]
     impl<T: Config> Pallet<T> {
         #[pallet::weight(10000)]
@@ -234,26 +264,76 @@ pub mod pallet {
                 who
             );
 
-            Self::append_or_replace_skcd_hash(skcd_cid, GrpcCallKind::GarbleStandard, None);
+            Self::append_or_replace_skcd_hash(
+                GrpcCallKind::GarbleStandard,
+                Some(skcd_cid),
+                None,
+                None,
+                None,
+                None,
+                None,
+            );
 
             Ok(())
         }
 
         #[pallet::weight(10000)]
-        pub fn garble_and_strip_signed(
+        pub fn garble_and_strip_display_circuits_package_signed(
             origin: OriginFor<T>,
-            skcd_cid: Vec<u8>,
             tx_msg: Vec<u8>,
         ) -> DispatchResult {
             let who = ensure_signed(origin)?;
             log::info!(
-                "[ocw-garble] garble_and_strip_signed: ({}, {:?}, {:?})",
-                sp_std::str::from_utf8(&skcd_cid).expect("skcd_cid utf8"),
+                "[ocw-garble] garble_and_strip_display_circuits_package_signed: ({:?} for {:?})",
                 sp_std::str::from_utf8(&tx_msg).expect("tx_msg utf8"),
                 who
             );
 
-            Self::append_or_replace_skcd_hash(skcd_cid, GrpcCallKind::GarbleAndStrip, Some(tx_msg));
+            // read DisplayCircuitsPackageValue directly from ocw-circuits
+            let display_circuits_package =
+                pallet_ocw_circuits::Pallet::<T>::get_display_circuits_package();
+            log::info!(
+                "[ocw-garble] display_circuits_package: ({:?},{:?}) ({:?},{:?})",
+                sp_std::str::from_utf8(&display_circuits_package.message_skcd_cid)
+                    .expect("message_skcd_cid utf8"),
+                display_circuits_package.message_skcd_server_metadata_nb_digits,
+                sp_std::str::from_utf8(&display_circuits_package.pinpad_skcd_cid)
+                    .expect("pinpad_skcd_cid utf8"),
+                display_circuits_package.pinpad_skcd_server_metadata_nb_digits,
+            );
+
+            // Generate random digits
+            // cf https://github.com/paritytech/substrate/blob/master/frame/lottery/src/lib.rs#L506
+            let nonce = Self::get_and_increment_nonce();
+            let (random_seed, _) = T::MyRandomness::random(&nonce);
+            // random_seed is a Hash so 256 -> 32 u8 is fine
+            // typically we need (2-4) digits(NOT u8) for the message
+            // and 10 digits(NOT u8) for the pinpad
+            // so we have more than enough
+            // TODO we could(SHOULD) split "random_seed" 4 bits by 4 bits b/c that is enough for [0-10] range
+            let random_seed = <[u8; 32]>::decode(&mut random_seed.as_ref())
+                .expect("secure hashes should always be bigger than u32; qed");
+            log::debug!("[ocw-garble] random_seed: {:?}", random_seed,);
+
+            // let mut random_numbers2: Vec<_> = random_seed.iter().map(|x| u8_to_digit(x)).collect();
+            // log::info!("[ocw-garble] digits2: {:?}", random_numbers2,);
+
+            // https://github.com/paritytech/substrate/blob/master/frame/society/src/lib.rs#L1420
+            // TODO is ChaChaRng secure? (or at least good enough)
+            let mut rng = ChaChaRng::from_seed(random_seed);
+            let mut digits_pinpad: Vec<u8> = (0..10).collect();
+            digits_pinpad.shuffle(&mut rng);
+            log::info!("[ocw-garble] digits_pinpad: {:?}", digits_pinpad,);
+
+            // TODO must SHUFFLE the pinpad digits, NOT randomize them
+            // each [0-10] MUST be in the final "digits"
+
+            // TODO if ok, remove call to "u8_to_digit"(and remove "random_numbers2")
+            let digits_message: Vec<u8> = (0..2).map(|_| rng.gen_range(0..10)).collect();
+            log::info!("[ocw-garble] digits_message: {:?}", digits_message,);
+
+            // TODO
+            // Self::append_or_replace_skcd_hash(GrpcCallKind::GarbleStandard, None, Some(), Some(), Some(tx_msg), Some(), Some());
 
             Ok(())
         }
@@ -280,20 +360,28 @@ pub mod pallet {
         #[pallet::weight(10000)]
         pub fn callback_new_garbled_and_strip_signed(
             origin: OriginFor<T>,
-            pgarbled_cid: Vec<u8>,
-            packmsg_cid: Vec<u8>,
-            circuit_digits: Vec<u8>,
+            message_pgarbled_cid: Vec<u8>,
+            message_packmsg_cid: Vec<u8>,
+            message_digits: Vec<u8>,
+            pinpad_pgarbled_cid: Vec<u8>,
+            pinpad_packmsg_cid: Vec<u8>,
+            pinpad_digits: Vec<u8>,
         ) -> DispatchResult {
             let who = ensure_signed(origin.clone())?;
             log::info!(
-                "[ocw-garble] callback_new_garbled_and_strip_signed: ({:?},{:?})",
-                sp_std::str::from_utf8(&pgarbled_cid).expect("skcd_cid utf8"),
+                "[ocw-garble] callback_new_garbled_and_strip_signed: ({:?},{:?}) ({:?},{:?}) for {:?}",
+                sp_std::str::from_utf8(&message_pgarbled_cid).expect("message_pgarbled_cid utf8"),
+                sp_std::str::from_utf8(&message_packmsg_cid).expect("message_packmsg_cid utf8"),
+                sp_std::str::from_utf8(&pinpad_pgarbled_cid).expect("pinpad_pgarbled_cid utf8"),
+                sp_std::str::from_utf8(&pinpad_packmsg_cid).expect("pinpad_packmsg_cid utf8"),
                 who
             );
 
             Self::deposit_event(Event::NewGarbleAndStrippedIpfsCid(
-                pgarbled_cid.clone(),
-                packmsg_cid.clone(),
+                message_pgarbled_cid.clone(),
+                message_packmsg_cid.clone(),
+                pinpad_pgarbled_cid.clone(),
+                pinpad_packmsg_cid.clone(),
             ));
 
             // store the metadata using the pallet-tx-validation
@@ -303,11 +391,12 @@ pub mod pallet {
             //     ipfs_cid: pgarbled_cid,
             //     circuit_digits: circuit_digits,
             // };
-            pallet_tx_validation::store_metadata_aux::<T>(
-                origin,
-                pgarbled_cid.clone(),
-                circuit_digits,
-            );
+            // TODO
+            // pallet_tx_validation::store_metadata_aux::<T>(
+            //     origin,
+            //     pgarbled_cid.clone(),
+            //     circuit_digits,
+            // );
 
             // and update our internal map of pending circuits for the given account
             // this is USED via RPC by the app, not directly!
@@ -316,11 +405,23 @@ pub mod pallet {
             let mut current_pending_circuits: PendingCircuitsType =
                 <AccountToPendingCircuitsMap<T>>::try_get(&who).unwrap_or_default();
             current_pending_circuits
-                .try_push(StrippedCircuitPackage {
-                    pgarbled_cid: TryInto::<BoundedVec<u8, ConstU32<64>>>::try_into(pgarbled_cid)
-                        .unwrap(),
-                    packmsg_cid: TryInto::<BoundedVec<u8, ConstU32<64>>>::try_into(packmsg_cid)
-                        .unwrap(),
+                .try_push(DisplayStrippedCircuitsPackage {
+                    message_pgarbled_cid: TryInto::<BoundedVec<u8, ConstU32<64>>>::try_into(
+                        message_pgarbled_cid,
+                    )
+                    .unwrap(),
+                    message_packmsg_cid: TryInto::<BoundedVec<u8, ConstU32<64>>>::try_into(
+                        message_packmsg_cid,
+                    )
+                    .unwrap(),
+                    pinpad_pgarbled_cid: TryInto::<BoundedVec<u8, ConstU32<64>>>::try_into(
+                        pinpad_pgarbled_cid,
+                    )
+                    .unwrap(),
+                    pinpad_packmsg_cid: TryInto::<BoundedVec<u8, ConstU32<64>>>::try_into(
+                        pinpad_packmsg_cid,
+                    )
+                    .unwrap(),
                 })
                 .unwrap();
             <AccountToPendingCircuitsMap<T>>::insert(who, current_pending_circuits);
@@ -354,7 +455,15 @@ pub mod pallet {
     // reply type for each GrpcCallKind
     enum GrpcCallReplyKind {
         GarbleStandard(crate::interstellarpbapigarble::GarbleIpfsReply),
-        GarbleAndStrip(crate::interstellarpbapigarble::GarbleAndStripIpfsReply),
+        /// two reply b/c we call the same endpoint twice: one for message, then one for pinpad
+        /// param Vec<u8> = "digits"; generated randomly in "garble_and_strip_display_circuits_package_signed"
+        ///   and passed all the way around
+        GarbleAndStrip(
+            crate::interstellarpbapigarble::GarbleAndStripIpfsReply,
+            Vec<u8>,
+            crate::interstellarpbapigarble::GarbleAndStripIpfsReply,
+            Vec<u8>,
+        ),
     }
 
     impl Default for GrpcCallKind {
@@ -365,27 +474,44 @@ pub mod pallet {
 
     #[derive(Debug, Deserialize, Encode, Decode, Default)]
     struct IndexingData {
-        skcd_ipfs_hash: Vec<u8>,
         block_number: u32,
         grpc_kind: GrpcCallKind,
+        // optional: only if GrpcCallKind::GarbleStandard
+        skcd_ipfs_cid: Option<Vec<u8>>,
         // optional: only if GrpcCallKind::GarbleAndStrip
+        message_skcd_ipfs_cid: Option<Vec<u8>>,
+        pinpad_skcd_ipfs_cid: Option<Vec<u8>>,
         tx_msg: Option<Vec<u8>>,
+        message_digits: Option<Vec<u8>>,
+        pinpad_digits: Option<Vec<u8>>,
     }
 
     impl<T: Config> Pallet<T> {
         /// Append a new number to the tail of the list, removing an element from the head if reaching
         ///   the bounded length.
         fn append_or_replace_skcd_hash(
-            skcd_cid: Vec<u8>,
             grpc_kind: GrpcCallKind,
+            // optional: only if GrpcCallKind::GarbleStandard
+            skcd_cid: Option<Vec<u8>>,
+            // optional: only if GrpcCallKind::GarbleAndStrip
+            message_skcd_ipfs_cid: Option<Vec<u8>>,
+            pinpad_skcd_ipfs_cid: Option<Vec<u8>>,
             tx_msg: Option<Vec<u8>>,
+            message_digits: Option<Vec<u8>>,
+            pinpad_digits: Option<Vec<u8>>,
         ) {
             let key = Self::derived_key();
             let data = IndexingData {
-                skcd_ipfs_hash: skcd_cid,
                 block_number: 1,
                 grpc_kind: grpc_kind,
+                // optional: only if GrpcCallKind::GarbleStandard
+                skcd_ipfs_cid: skcd_cid,
+                // optional: only if GrpcCallKind::GarbleAndStrip
+                message_skcd_ipfs_cid: message_skcd_ipfs_cid,
+                pinpad_skcd_ipfs_cid: pinpad_skcd_ipfs_cid,
                 tx_msg: tx_msg,
+                message_digits: message_digits,
+                pinpad_digits: pinpad_digits,
             };
             sp_io::offchain_index::set(&key, &data.encode());
         }
@@ -408,11 +534,10 @@ pub mod pallet {
                 .unwrap_or(Some(IndexingData::default()))
                 .unwrap_or(IndexingData::default());
 
-            let to_process_skcd_cid = indexing_data.skcd_ipfs_hash;
             let to_process_block_number = indexing_data.block_number;
 
             // TODO proper job queue; or at least proper CHECK
-            if to_process_skcd_cid.is_empty() || to_process_block_number == 0 {
+            if to_process_block_number == 0 {
                 log::info!("[ocw-garble] nothing to do, returning...");
                 return Ok(());
             }
@@ -444,10 +569,21 @@ pub mod pallet {
                 oci_mem.set(&IndexingData::default());
 
                 let result_grpc_call = match indexing_data.grpc_kind {
-                    GrpcCallKind::GarbleStandard => Self::call_grpc_garble(&to_process_skcd_cid),
+                    GrpcCallKind::GarbleStandard => Self::call_grpc_garble(
+                        indexing_data.skcd_ipfs_cid.expect("missing skcd_ipfs_cid"),
+                    ),
                     GrpcCallKind::GarbleAndStrip => Self::call_grpc_garble_and_strip(
-                        &to_process_skcd_cid,
-                        &indexing_data.tx_msg.expect("missing tx_msg"),
+                        indexing_data
+                            .message_skcd_ipfs_cid
+                            .expect("missing message_skcd_ipfs_cid"),
+                        indexing_data
+                            .pinpad_skcd_ipfs_cid
+                            .expect("missing pinpad_skcd_ipfs_cid"),
+                        indexing_data.tx_msg.expect("missing tx_msg"),
+                        indexing_data
+                            .message_digits
+                            .expect("missing message_digits"),
+                        indexing_data.pinpad_digits.expect("missing pinpad_digits"),
                     ),
                 };
 
@@ -459,7 +595,7 @@ pub mod pallet {
         /// Call the GRPC endpoint API_ENDPOINT_GARBLE_URL, encoding the request as grpc-web, and decoding the response
         ///
         /// return: a IPFS hash
-        fn call_grpc_garble(skcd_cid: &Vec<u8>) -> Result<GrpcCallReplyKind, Error<T>> {
+        fn call_grpc_garble(skcd_cid: Vec<u8>) -> Result<GrpcCallReplyKind, Error<T>> {
             let skcd_cid_str = sp_std::str::from_utf8(&skcd_cid)
                 .expect("call_grpc_garble from_utf8")
                 .to_owned();
@@ -488,43 +624,71 @@ pub mod pallet {
             Ok(GrpcCallReplyKind::GarbleStandard(resp))
         }
 
-        /// Call the GRPC endpoint API_ENDPOINT_GARBLE_STRIP_URL, encoding the request as grpc-web, and decoding the response
-        ///
-        /// return: a IPFS hash
+        /// Regroup the 2 calls to API_ENDPOINT_GARBLE_STRIP_URL in one
         fn call_grpc_garble_and_strip(
-            skcd_cid: &Vec<u8>,
-            tx_msg: &Vec<u8>,
+            message_skcd_ipfs_cid: Vec<u8>,
+            pinpad_skcd_ipfs_cid: Vec<u8>,
+            tx_msg: Vec<u8>,
+            message_digits: Vec<u8>,
+            pinpad_digits: Vec<u8>,
         ) -> Result<GrpcCallReplyKind, Error<T>> {
-            let skcd_cid_str = sp_std::str::from_utf8(&skcd_cid)
-                .expect("call_grpc_garble_and_strip from_utf8")
-                .to_owned();
-            let tx_msg_str = sp_std::str::from_utf8(&tx_msg)
-                .expect("call_grpc_garble_and_strip from_utf8")
-                .to_owned();
-            let input = crate::interstellarpbapigarble::GarbleAndStripIpfsRequest {
-                skcd_cid: skcd_cid_str,
-                tx_msg: tx_msg_str,
-            };
-            let body_bytes = ocw_common::encode_body(input);
+            /// INTERNAL: call API_ENDPOINT_GARBLE_STRIP_URL for one circuits
+            fn call_grpc_garble_and_strip_one<T>(
+                skcd_cid: Vec<u8>,
+                tx_msg: Vec<u8>,
+                digits: Vec<u8>,
+            ) -> Result<crate::interstellarpbapigarble::GarbleAndStripIpfsReply, Error<T>>
+            {
+                let skcd_cid_str = sp_std::str::from_utf8(&skcd_cid)
+                    .expect("call_grpc_garble_and_strip from_utf8")
+                    .to_owned();
+                let tx_msg_str = sp_std::str::from_utf8(&tx_msg)
+                    .expect("call_grpc_garble_and_strip from_utf8")
+                    .to_owned();
+                let input = crate::interstellarpbapigarble::GarbleAndStripIpfsRequest {
+                    skcd_cid: skcd_cid_str,
+                    tx_msg: tx_msg_str,
+                    server_metadata: Some(crate::interstellarpbapigarble::CircuitServerMetadata {
+                        digits: digits.clone().into(),
+                    }),
+                };
+                let body_bytes = ocw_common::encode_body(input);
 
-            // construct the full endpoint URI using:
-            // - dynamic "URI root" from env
-            // - hardcoded API_ENDPOINT_GARBLE_STRIP_URL from "const" in this file
-            #[cfg(feature = "std")]
-            let uri_root = std::env::var("INTERSTELLAR_URI_ROOT_API_GARBLE").unwrap();
-            #[cfg(not(feature = "std"))]
-            let uri_root = "PLACEHOLDER_no_std";
-            let endpoint = format!("{}{}", uri_root, API_ENDPOINT_GARBLE_STRIP_URL);
+                // construct the full endpoint URI using:
+                // - dynamic "URI root" from env
+                // - hardcoded API_ENDPOINT_GARBLE_STRIP_URL from "const" in this file
+                #[cfg(feature = "std")]
+                let uri_root = std::env::var("INTERSTELLAR_URI_ROOT_API_GARBLE").unwrap();
+                #[cfg(not(feature = "std"))]
+                let uri_root = "PLACEHOLDER_no_std";
+                let endpoint = format!("{}{}", uri_root, API_ENDPOINT_GARBLE_STRIP_URL);
 
-            let (resp_bytes, resp_content_type) =
-                ocw_common::fetch_from_remote_grpc_web(body_bytes, &endpoint).map_err(|e| {
-                    log::error!("[ocw-garble] call_grpc_garble_and_strip error: {:?}", e);
-                    <Error<T>>::HttpFetchingError
-                })?;
+                let (resp_bytes, resp_content_type) =
+                    ocw_common::fetch_from_remote_grpc_web(body_bytes, &endpoint).map_err(|e| {
+                        log::error!("[ocw-garble] call_grpc_garble_and_strip error: {:?}", e);
+                        <Error<T>>::HttpFetchingError
+                    })?;
 
-            let (resp, _trailers): (crate::interstellarpbapigarble::GarbleAndStripIpfsReply, _) =
-                ocw_common::decode_body(resp_bytes, resp_content_type);
-            Ok(GrpcCallReplyKind::GarbleAndStrip(resp))
+                let (resp, _trailers): (
+                    crate::interstellarpbapigarble::GarbleAndStripIpfsReply,
+                    _,
+                ) = ocw_common::decode_body(resp_bytes, resp_content_type);
+                Ok(resp)
+            }
+
+            // TODO pass correct params for pinpad and message
+            let message_reply =
+                call_grpc_garble_and_strip_one::<T>(message_skcd_ipfs_cid, tx_msg, message_digits.clone());
+            let pinpad_reply =
+                call_grpc_garble_and_strip_one::<T>(pinpad_skcd_ipfs_cid, vec![], pinpad_digits.clone());
+
+            // TODO pass correct params for pinpad and message
+            Ok(GrpcCallReplyKind::GarbleAndStrip(
+                message_reply.expect("message_reply failed!"),
+                message_digits,
+                pinpad_reply.expect("pinpad_reply failed!"),
+                pinpad_digits,
+            ))
         }
 
         /// Called at the end of process_if_needed/offchain_worker
@@ -540,7 +704,7 @@ pub mod pallet {
                     //   - `None`: no account is available for sending transaction
                     //   - `Some((account, Ok(())))`: transaction is successfully sent
                     //   - `Some((account, Err(())))`: error occurred when sending the transaction
-                    let signer = Signer::<T, T::AuthorityId>::all_accounts();
+                    let signer = Signer::<T, <T as Config>::AuthorityId>::all_accounts();
                     if !signer.can_sign() {
                         log::error!("[ocw-garble] No local accounts available. Consider adding one via `author_insertKey` RPC[ALTERNATIVE DEV ONLY check 'if config.offchain_worker.enabled' in service.rs]");
                     }
@@ -551,18 +715,19 @@ pub mod pallet {
                                 pgarbled_cid: reply.pgarbled_cid.bytes().collect(),
                             }
                         }
-                        GrpcCallReplyKind::GarbleAndStrip(reply) => {
-                            Call::callback_new_garbled_and_strip_signed {
-                                pgarbled_cid: reply.pgarbled_cid.bytes().collect(),
-                                packmsg_cid: reply.packmsg_cid.bytes().collect(),
-                                circuit_digits: reply
-                                    .server_metadata
-                                    .clone()
-                                    .unwrap()
-                                    .digits
-                                    .to_vec(),
-                            }
-                        }
+                        GrpcCallReplyKind::GarbleAndStrip(
+                            message_reply,
+                            message_digits,
+                            pinpad_reply,
+                            pinpad_digits,
+                        ) => Call::callback_new_garbled_and_strip_signed {
+                            message_pgarbled_cid: message_reply.pgarbled_cid.bytes().collect(),
+                            message_packmsg_cid: message_reply.packmsg_cid.bytes().collect(),
+                            message_digits: message_digits.to_vec(),
+                            pinpad_pgarbled_cid: pinpad_reply.pgarbled_cid.bytes().collect(),
+                            pinpad_packmsg_cid: pinpad_reply.packmsg_cid.bytes().collect(),
+                            pinpad_digits: pinpad_digits.to_vec(),
+                        },
                     });
                     log::info!(
                         "[ocw-garble] finalize_grpc_call sent number : {:#?}",

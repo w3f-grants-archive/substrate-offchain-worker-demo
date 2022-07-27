@@ -281,6 +281,8 @@ impl pallet_ocw_garble::Config for Runtime {
     type AuthorityId = pallet_ocw_garble::crypto::TestAuthId;
     type Call = Call;
     type Event = Event;
+    // cf "construct_runtime!", this is where "RandomnessCollectiveFlip" is declared
+    type MyRandomness = RandomnessCollectiveFlip;
 }
 
 // For pallet-example-offchain-worker
