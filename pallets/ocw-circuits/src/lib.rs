@@ -164,6 +164,10 @@ pub mod pallet {
         HttpFetchingError,
         DeserializeToObjError,
         DeserializeToStrError,
+
+        // get_display_circuits_package(ie pallet_ocw_garble) was called
+        // but "DisplaySkcdPackageValue" is not completely set
+        DisplaySkcdPackageValueError,
     }
 
     #[pallet::hooks]
@@ -190,9 +194,17 @@ pub mod pallet {
     }
 
     impl<T: Config> Pallet<T> {
-        pub fn get_display_circuits_package() -> DisplaySkcdPackage {
-            <DisplaySkcdPackageValue<T>>::get()
-            // TODO return Result, and error-out if both fields are not set
+        pub fn get_display_circuits_package() -> Result<DisplaySkcdPackage, Error<T>> {
+            let display_circuit_package = <DisplaySkcdPackageValue<T>>::get();
+
+            // CHECK: error-out if both fields are not set
+            if display_circuit_package.message_skcd_server_metadata_nb_digits == 0
+                || display_circuit_package.pinpad_skcd_server_metadata_nb_digits == 0
+            {
+                return Err(<Error<T>>::DisplaySkcdPackageValueError);
+            }
+
+            Ok(display_circuit_package)
         }
     }
 

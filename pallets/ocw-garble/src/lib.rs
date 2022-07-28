@@ -291,7 +291,8 @@ pub mod pallet {
 
             // read DisplayCircuitsPackageValue directly from ocw-circuits
             let display_circuits_package =
-                pallet_ocw_circuits::Pallet::<T>::get_display_circuits_package();
+                pallet_ocw_circuits::Pallet::<T>::get_display_circuits_package()
+                    .expect("display_circuits_package not ready!");
             log::info!(
                 "[ocw-garble] display_circuits_package: ({:?},{:?}) ({:?},{:?})",
                 sp_std::str::from_utf8(&display_circuits_package.message_skcd_cid)
@@ -321,19 +322,26 @@ pub mod pallet {
             // https://github.com/paritytech/substrate/blob/master/frame/society/src/lib.rs#L1420
             // TODO is ChaChaRng secure? (or at least good enough)
             let mut rng = ChaChaRng::from_seed(random_seed);
-            let mut digits_pinpad: Vec<u8> = (0..10).collect();
-            digits_pinpad.shuffle(&mut rng);
-            log::info!("[ocw-garble] digits_pinpad: {:?}", digits_pinpad,);
+            let mut pinpad_digits: Vec<u8> = (0..10).collect();
+            pinpad_digits.shuffle(&mut rng);
+            log::info!("[ocw-garble] pinpad_digits: {:?}", pinpad_digits,);
 
-            // TODO must SHUFFLE the pinpad digits, NOT randomize them
+            // MUST SHUFFLE the pinpad digits, NOT randomize them
             // each [0-10] MUST be in the final "digits"
+            let message_digits: Vec<u8> = (0..2).map(|_| rng.gen_range(0..10)).collect();
+            log::info!("[ocw-garble] message_digits: {:?}", message_digits,);
 
-            // TODO if ok, remove call to "u8_to_digit"(and remove "random_numbers2")
-            let digits_message: Vec<u8> = (0..2).map(|_| rng.gen_range(0..10)).collect();
-            log::info!("[ocw-garble] digits_message: {:?}", digits_message,);
-
-            // TODO
-            // Self::append_or_replace_skcd_hash(GrpcCallKind::GarbleStandard, None, Some(), Some(), Some(tx_msg), Some(), Some());
+            Self::append_or_replace_skcd_hash(
+                GrpcCallKind::GarbleAndStrip,
+                // optional: only if GrpcCallKind::GarbleStandard
+                None,
+                // optional: only if GrpcCallKind::GarbleAndStrip
+                Some(display_circuits_package.message_skcd_cid.to_vec()),
+                Some(display_circuits_package.pinpad_skcd_cid.to_vec()),
+                Some(tx_msg),
+                Some(message_digits),
+                Some(pinpad_digits),
+            );
 
             Ok(())
         }
@@ -391,12 +399,13 @@ pub mod pallet {
             //     ipfs_cid: pgarbled_cid,
             //     circuit_digits: circuit_digits,
             // };
-            // TODO
-            // pallet_tx_validation::store_metadata_aux::<T>(
-            //     origin,
-            //     pgarbled_cid.clone(),
-            //     circuit_digits,
-            // );
+            pallet_tx_validation::store_metadata_aux::<T>(
+                origin,
+                message_pgarbled_cid.clone(),
+                message_digits.clone(),
+                pinpad_digits.clone(),
+            )
+            .expect("store_metadata_aux failed!");
 
             // and update our internal map of pending circuits for the given account
             // this is USED via RPC by the app, not directly!
@@ -677,10 +686,16 @@ pub mod pallet {
             }
 
             // TODO pass correct params for pinpad and message
-            let message_reply =
-                call_grpc_garble_and_strip_one::<T>(message_skcd_ipfs_cid, tx_msg, message_digits.clone());
-            let pinpad_reply =
-                call_grpc_garble_and_strip_one::<T>(pinpad_skcd_ipfs_cid, vec![], pinpad_digits.clone());
+            let message_reply = call_grpc_garble_and_strip_one::<T>(
+                message_skcd_ipfs_cid,
+                tx_msg,
+                message_digits.clone(),
+            );
+            let pinpad_reply = call_grpc_garble_and_strip_one::<T>(
+                pinpad_skcd_ipfs_cid,
+                vec![],
+                pinpad_digits.clone(),
+            );
 
             // TODO pass correct params for pinpad and message
             Ok(GrpcCallReplyKind::GarbleAndStrip(
