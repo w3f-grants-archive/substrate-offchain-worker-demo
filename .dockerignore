@@ -12,6 +12,4 @@
 !/node
 !/runtime
 !/ocw-common
-!/pallets/ocw-circuits
-!/pallets/ocw-garble
-!/pallets/tx-validation
+!/pallets/

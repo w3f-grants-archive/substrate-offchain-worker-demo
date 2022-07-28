@@ -4,6 +4,7 @@ members = [
     "runtime",
     # custom
     "ocw-common",
+    "pallets/mobile-registry",
     "pallets/ocw-circuits",
     "pallets/ocw-garble",
     "pallets/tx-validation",

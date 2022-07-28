@@ -50,6 +50,7 @@ frame-system-benchmarking = { version = "4.0.0-dev", default-features = false, g
 hex-literal = { version = "0.3.4", optional = true }
 
 # Local Dependencies
+pallet-mobile-registry = { version = "4.0.0-dev", default-features = false, path = "../pallets/mobile-registry" }
 pallet-ocw-circuits = { version = "4.0.0-dev", default-features = false, path = "../pallets/ocw-circuits" }
 pallet-ocw-garble = { version = "4.0.0-dev", default-features = false, path = "../pallets/ocw-garble" }
 pallet-tx-validation = { version = "4.0.0-dev", default-features = false, path = "../pallets/tx-validation" }

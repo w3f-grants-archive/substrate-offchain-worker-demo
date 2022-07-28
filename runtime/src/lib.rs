@@ -307,6 +307,10 @@ impl pallet_tx_validation::Config for Runtime {
     type Event = Event;
 }
 
+impl pallet_mobile_registry::Config for Runtime {
+    type Event = Event;
+}
+
 // TODO?
 // https://github.com/paritytech/substrate/blob/master/bin/node/runtime/src/lib.rs#L454
 // impl pallet_asset_tx_payment::Config for Runtime {
@@ -398,6 +402,7 @@ construct_runtime!(
         Sudo: pallet_sudo,
         // Include the custom logic from the pallets in the runtime.
         // NOTE: that will generate extrinsics named "ocwGarble" and "ocwCircuits" in the front end
+        MobileRegistry: pallet_mobile_registry,
         OcwCircuits: pallet_ocw_circuits, // ::{Pallet, Call, Storage, Event<T>, ValidateUnsigned}
         OcwGarble: pallet_ocw_garble, // ::{Pallet, Call, Storage, Event<T>, ValidateUnsigned}
         TxValidation: pallet_tx_validation,
