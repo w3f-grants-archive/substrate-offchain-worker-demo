@@ -141,7 +141,7 @@ pub mod pallet {
         // Sent at the end of the offchain_worker(ie it is an OUTPUT)
         NewSkcdIpfsCid(Vec<u8>),
         // Display version: one IPFS cid for the message, one IPFS cid for the pinpad
-        NewDisplaySkcdPackageIpfsCid(Vec<u8>, bool),
+        NewDisplaySkcdPackageIpfsCid(Vec<u8>, Vec<u8>),
     }
 
     // Errors inform users that something went wrong.
@@ -240,7 +240,7 @@ pub mod pallet {
                 who
             );
 
-            Self::append_or_replace_verilog_hash(Some(verilog_cid), GrpcCallKind::Generic, None);
+            Self::append_or_replace_verilog_hash(Some(verilog_cid), GrpcCallKind::Generic);
 
             Ok(())
         }
@@ -248,7 +248,6 @@ pub mod pallet {
         #[pallet::weight(10000)]
         pub fn submit_config_display_circuits_package_signed(
             origin: OriginFor<T>,
-            is_message: bool,
         ) -> DispatchResult {
             let who = ensure_signed(origin)?;
             log::info!(
@@ -256,7 +255,7 @@ pub mod pallet {
                 who
             );
 
-            Self::append_or_replace_verilog_hash(None, GrpcCallKind::Display, Some(is_message));
+            Self::append_or_replace_verilog_hash(None, GrpcCallKind::Display);
 
             Ok(())
         }
@@ -280,39 +279,37 @@ pub mod pallet {
         #[pallet::weight(10000)]
         pub fn callback_new_display_circuits_package_signed(
             origin: OriginFor<T>,
-            skcd_cid: Vec<u8>,
-            nb_digits: u32,
-            is_message: bool,
+            message_skcd_cid: Vec<u8>,
+            message_nb_digits: u32,
+            pinpad_skcd_cid: Vec<u8>,
+            pinpad_nb_digits: u32,
         ) -> DispatchResult {
             let who = ensure_signed(origin.clone())?;
             log::info!(
-                "[ocw-circuits] callback_new_display_circuits_package_signed: ({:?},{:?},{:?} for {:?})",
-                sp_std::str::from_utf8(&skcd_cid).expect("skcd_cid utf8"),
-                nb_digits,
-                is_message,
+                "[ocw-circuits] callback_new_display_circuits_package_signed: ({:?},{:?}),({:?},{:?}) for {:?}",
+                sp_std::str::from_utf8(&message_skcd_cid).expect("message_skcd_cid utf8"),
+                message_nb_digits,
+                sp_std::str::from_utf8(&pinpad_skcd_cid).expect("pinpad_skcd_cid utf8"),
+                pinpad_nb_digits,
                 who
             );
 
             Self::deposit_event(Event::NewDisplaySkcdPackageIpfsCid(
-                skcd_cid.clone(),
-                is_message,
+                message_skcd_cid.clone(),
+                pinpad_skcd_cid.clone(),
             ));
 
             // and update the current "reference" circuits package
-            // done in two steps:
-            // - get the current value
-            // - update one of its two fields based on the value of "is_message"
-            let mut current_value = <DisplaySkcdPackageValue<T>>::get();
-            if is_message {
-                current_value.message_skcd_cid =
-                    TryInto::<BoundedVec<u8, ConstU32<64>>>::try_into(skcd_cid).unwrap();
-                current_value.message_skcd_server_metadata_nb_digits = nb_digits;
-            } else {
-                current_value.pinpad_skcd_cid =
-                    TryInto::<BoundedVec<u8, ConstU32<64>>>::try_into(skcd_cid).unwrap();
-                current_value.pinpad_skcd_server_metadata_nb_digits = nb_digits;
-            }
-            <DisplaySkcdPackageValue<T>>::set(current_value);
+            <DisplaySkcdPackageValue<T>>::set(DisplaySkcdPackage {
+                message_skcd_cid: TryInto::<BoundedVec<u8, ConstU32<64>>>::try_into(
+                    message_skcd_cid,
+                )
+                .unwrap(),
+                message_skcd_server_metadata_nb_digits: message_nb_digits,
+                pinpad_skcd_cid: TryInto::<BoundedVec<u8, ConstU32<64>>>::try_into(pinpad_skcd_cid)
+                    .unwrap(),
+                pinpad_skcd_server_metadata_nb_digits: pinpad_nb_digits,
+            });
 
             Ok(())
         }
@@ -349,7 +346,11 @@ pub mod pallet {
     // reply type for each GrpcCallKind
     enum GrpcCallReplyKind {
         Generic(crate::interstellarpbapicircuits::SkcdGenericFromIpfsReply),
-        Display(crate::interstellarpbapicircuits::SkcdDisplayReply, bool),
+        // one reply for message, one for pinpad
+        Display(
+            crate::interstellarpbapicircuits::SkcdDisplayReply,
+            crate::interstellarpbapicircuits::SkcdDisplayReply,
+        ),
     }
 
     #[derive(Debug, Deserialize, Encode, Decode, Default)]
@@ -360,23 +361,17 @@ pub mod pallet {
         verilog_ipfs_hash: Option<Vec<u8>>,
         block_number: u32,
         grpc_kind: GrpcCallKind,
-        is_message: Option<bool>,
     }
 
     impl<T: Config> Pallet<T> {
         /// Append a new number to the tail of the list, removing an element from the head if reaching
         ///   the bounded length.
-        fn append_or_replace_verilog_hash(
-            verilog_cid: Option<Vec<u8>>,
-            grpc_kind: GrpcCallKind,
-            is_message: Option<bool>,
-        ) {
+        fn append_or_replace_verilog_hash(verilog_cid: Option<Vec<u8>>, grpc_kind: GrpcCallKind) {
             let key = Self::derived_key();
             let data = IndexingData {
                 verilog_ipfs_hash: verilog_cid,
                 block_number: 1,
                 grpc_kind: grpc_kind,
-                is_message: is_message,
             };
             sp_io::offchain_index::set(&key, &data.encode());
         }
@@ -404,7 +399,6 @@ pub mod pallet {
 
             let to_process_verilog_cid = indexing_data.verilog_ipfs_hash;
             let to_process_block_number = indexing_data.block_number;
-            let to_process_is_message = indexing_data.is_message;
 
             // TODO proper job queue; or at least proper CHECK
             if to_process_block_number == 0 {
@@ -442,9 +436,7 @@ pub mod pallet {
                     GrpcCallKind::Generic => Self::call_grpc_generic(
                         &to_process_verilog_cid.expect("missing verilog_cid"),
                     ),
-                    GrpcCallKind::Display => {
-                        Self::call_grpc_display(to_process_is_message.expect("missing is_message"))
-                    }
+                    GrpcCallKind::Display => Self::call_grpc_display(),
                 };
 
                 Self::finalize_grpc_call(result_grpc_call)
@@ -489,71 +481,86 @@ pub mod pallet {
         /// Call the GRPC endpoint API_ENDPOINT_GENERIC_URL, encoding the request as grpc-web, and decoding the response
         ///
         /// return: a IPFS hash
-        fn call_grpc_display(is_message: bool) -> Result<GrpcCallReplyKind, Error<T>> {
-            let input = if is_message {
-                crate::interstellarpbapicircuits::SkcdDisplayRequest {
-                    width: DEFAULT_MESSAGE_WIDTH,
-                    height: DEFAULT_MESSAGE_HEIGHT,
-                    digits_bboxes: vec![
-                        // first digit bbox --------------------------------------------
-                        0.25_f32, 0.1_f32, 0.45_f32, 0.9_f32,
-                        // second digit bbox -------------------------------------------
-                        0.55_f32, 0.1_f32, 0.75_f32, 0.9_f32,
-                    ],
-                }
-            } else {
-                // IMPORTANT: by convention the "pinpad" is 10 digits, placed horizontally(side by side)
-                // DO NOT change the layout, else wallet-app will NOT display the pinpad correctly!
-                // That is b/c this layout in treated as a "texture atlas" so the positions MUST be known.
-                // Ideally the positions SHOULD be passed from here all the way into the serialized .pgarbled/.packmsg
-                // but this NOT YET the case.
+        fn call_grpc_display() -> Result<GrpcCallReplyKind, Error<T>> {
+            /// aux function: call API_ENDPOINT_DISPLAY_URL for either is_message or not
+            fn call_grpc_display_one<T>(
+                is_message: bool,
+            ) -> Result<crate::interstellarpbapicircuits::SkcdDisplayReply, Error<T>> {
+                let input = if is_message {
+                    crate::interstellarpbapicircuits::SkcdDisplayRequest {
+                        width: DEFAULT_MESSAGE_WIDTH,
+                        height: DEFAULT_MESSAGE_HEIGHT,
+                        digits_bboxes: vec![
+                            // first digit bbox --------------------------------------------
+                            0.25_f32, 0.1_f32, 0.45_f32, 0.9_f32,
+                            // second digit bbox -------------------------------------------
+                            0.55_f32, 0.1_f32, 0.75_f32, 0.9_f32,
+                        ],
+                    }
+                } else {
+                    // IMPORTANT: by convention the "pinpad" is 10 digits, placed horizontally(side by side)
+                    // DO NOT change the layout, else wallet-app will NOT display the pinpad correctly!
+                    // That is b/c this layout in treated as a "texture atlas" so the positions MUST be known.
+                    // Ideally the positions SHOULD be passed from here all the way into the serialized .pgarbled/.packmsg
+                    // but this NOT YET the case.
 
-                // 10 digits, 4 corners(vertices) per digit
-                let mut digits_bboxes: Vec<f32> = Vec::with_capacity(10 * 4);
-                /*
-                for (int i = 0; i < 10; i++) {
-                    digits_bboxes.emplace_back(0.1f * i, 0.0f, 0.1f * (i + 1), 1.0f);
-                }
-                */
-                for i in 0..10 {
-                    digits_bboxes.append(
-                        vec![
-                            0.1_f32 * i as f32,
-                            0.0_f32,
-                            0.1_f32 * (i + 1) as f32,
-                            1.0_f32,
-                        ]
-                        .as_mut(),
-                    );
-                }
+                    // 10 digits, 4 corners(vertices) per digit
+                    let mut digits_bboxes: Vec<f32> = Vec::with_capacity(10 * 4);
+                    /*
+                    for (int i = 0; i < 10; i++) {
+                        digits_bboxes.emplace_back(0.1f * i, 0.0f, 0.1f * (i + 1), 1.0f);
+                    }
+                    */
+                    for i in 0..10 {
+                        digits_bboxes.append(
+                            vec![
+                                0.1_f32 * i as f32,
+                                0.0_f32,
+                                0.1_f32 * (i + 1) as f32,
+                                1.0_f32,
+                            ]
+                            .as_mut(),
+                        );
+                    }
 
-                crate::interstellarpbapicircuits::SkcdDisplayRequest {
-                    width: DEFAULT_PINPAD_WIDTH,
-                    height: DEFAULT_PINPAD_HEIGHT,
-                    digits_bboxes: digits_bboxes,
-                }
-            };
+                    crate::interstellarpbapicircuits::SkcdDisplayRequest {
+                        width: DEFAULT_PINPAD_WIDTH,
+                        height: DEFAULT_PINPAD_HEIGHT,
+                        digits_bboxes: digits_bboxes,
+                    }
+                };
 
-            let body_bytes = ocw_common::encode_body(input);
+                let body_bytes = ocw_common::encode_body(input);
 
-            // construct the full endpoint URI using:
-            // - dynamic "URI root" from env
-            // - hardcoded API_ENDPOINT_DISPLAY_URL from "const" in this file
-            #[cfg(feature = "std")]
-            let uri_root = std::env::var("INTERSTELLAR_URI_ROOT_API_CIRCUITS").unwrap();
-            #[cfg(not(feature = "std"))]
-            let uri_root = "PLACEHOLDER_no_std";
-            let endpoint = format!("{}{}", uri_root, API_ENDPOINT_DISPLAY_URL);
+                // construct the full endpoint URI using:
+                // - dynamic "URI root" from env
+                // - hardcoded API_ENDPOINT_DISPLAY_URL from "const" in this file
+                #[cfg(feature = "std")]
+                let uri_root = std::env::var("INTERSTELLAR_URI_ROOT_API_CIRCUITS").unwrap();
+                #[cfg(not(feature = "std"))]
+                let uri_root = "PLACEHOLDER_no_std";
+                let endpoint = format!("{}{}", uri_root, API_ENDPOINT_DISPLAY_URL);
 
-            let (resp_bytes, resp_content_type) =
-                ocw_common::fetch_from_remote_grpc_web(body_bytes, &endpoint).map_err(|e| {
-                    log::error!("[ocw-circuits] call_grpc_display error: {:?}", e);
-                    <Error<T>>::HttpFetchingError
-                })?;
+                let (resp_bytes, resp_content_type) =
+                    ocw_common::fetch_from_remote_grpc_web(body_bytes, &endpoint).map_err(|e| {
+                        log::error!("[ocw-circuits] call_grpc_display error: {:?}", e);
+                        <Error<T>>::HttpFetchingError
+                    })?;
 
-            let (resp, _trailers): (crate::interstellarpbapicircuits::SkcdDisplayReply, _) =
-                ocw_common::decode_body(resp_bytes, resp_content_type);
-            Ok(GrpcCallReplyKind::Display(resp, is_message))
+                let (resp, _trailers): (crate::interstellarpbapicircuits::SkcdDisplayReply, _) =
+                    ocw_common::decode_body(resp_bytes, resp_content_type);
+
+                Ok(resp)
+            }
+
+            let message_reply = call_grpc_display_one::<T>(true);
+            let pinpad_reply = call_grpc_display_one::<T>(false);
+
+            // TODO pass correct params for pinpad and message
+            Ok(GrpcCallReplyKind::Display(
+                message_reply.expect("message_reply failed!"),
+                pinpad_reply.expect("pinpad_reply failed!"),
+            ))
         }
 
         /// Called at the end of process_if_needed/offchain_worker
@@ -578,11 +585,20 @@ pub mod pallet {
                         GrpcCallReplyKind::Generic(reply) => Call::callback_new_skcd_signed {
                             skcd_cid: reply.skcd_cid.bytes().collect(),
                         },
-                        GrpcCallReplyKind::Display(reply, is_message) => {
+                        GrpcCallReplyKind::Display(message_reply, pinpad_reply) => {
                             Call::callback_new_display_circuits_package_signed {
-                                skcd_cid: reply.skcd_cid.bytes().collect(),
-                                nb_digits: reply.server_metadata.as_ref().unwrap().nb_digits,
-                                is_message: *is_message,
+                                message_skcd_cid: message_reply.skcd_cid.bytes().collect(),
+                                message_nb_digits: message_reply
+                                    .server_metadata
+                                    .as_ref()
+                                    .unwrap()
+                                    .nb_digits,
+                                pinpad_skcd_cid: pinpad_reply.skcd_cid.bytes().collect(),
+                                pinpad_nb_digits: pinpad_reply
+                                    .server_metadata
+                                    .as_ref()
+                                    .unwrap()
+                                    .nb_digits,
                             }
                         }
                     });
