@@ -281,6 +281,8 @@ impl pallet_ocw_garble::Config for Runtime {
     type AuthorityId = pallet_ocw_garble::crypto::TestAuthId;
     type Call = Call;
     type Event = Event;
+    // cf "construct_runtime!", this is where "RandomnessCollectiveFlip" is declared
+    type MyRandomness = RandomnessCollectiveFlip;
 }
 
 // For pallet-example-offchain-worker
@@ -302,6 +304,10 @@ impl pallet_ocw_circuits::Config for Runtime {
 
 // For pallet-tx-validation
 impl pallet_tx_validation::Config for Runtime {
+    type Event = Event;
+}
+
+impl pallet_mobile_registry::Config for Runtime {
     type Event = Event;
 }
 
@@ -396,6 +402,7 @@ construct_runtime!(
         Sudo: pallet_sudo,
         // Include the custom logic from the pallets in the runtime.
         // NOTE: that will generate extrinsics named "ocwGarble" and "ocwCircuits" in the front end
+        MobileRegistry: pallet_mobile_registry,
         OcwCircuits: pallet_ocw_circuits, // ::{Pallet, Call, Storage, Event<T>, ValidateUnsigned}
         OcwGarble: pallet_ocw_garble, // ::{Pallet, Call, Storage, Event<T>, ValidateUnsigned}
         TxValidation: pallet_tx_validation,

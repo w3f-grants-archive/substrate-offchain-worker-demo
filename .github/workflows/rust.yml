@@ -1,0 +1,33 @@
+name: Install CMake, Build then Test
+
+on:
+  push:
+
+jobs:
+  # TODO split test and lint; but that REQUIRE caching else recompile from scratch in between
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      # install build dependencies
+      # MUST match the same step in Dockerfile
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y libboost-dev
+
+      - uses: Interstellar-Network/gh-actions/prepare@v1.0.0
+        with:
+          ssh_key_input: ${{ secrets.SSH_KEY_MACHINE_USER_INTERSTELLAR_CI }}
+          install_cmake_and_ninja: false
+          # Not 100% sure if native code is used, but CCache can not hurt
+          # TODO check CI results and remove if not used
+          install_ccache: true
+          install_conan: false
+
+      - uses: Interstellar-Network/gh-actions/prepare_rust@v1.0.0
+        with:
+          toolchain_toolchain: nightly
+          toolchain_components: rustfmt,clippy
+      - run: rustup target add --toolchain nightly wasm32-unknown-unknown
+
+      # TODO - uses: Interstellar-Network/gh-actions/rust-lint@v1.0.0
+
+      - uses: Interstellar-Network/gh-actions/rust-build-and-test@v1.0.0

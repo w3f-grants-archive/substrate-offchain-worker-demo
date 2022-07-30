@@ -3655,6 +3655,7 @@ dependencies = [
  "pallet-aura",
  "pallet-balances",
  "pallet-grandpa",
+ "pallet-mobile-registry",
  "pallet-ocw-circuits",
  "pallet-ocw-garble",
  "pallet-randomness-collective-flip",
@@ -3958,6 +3959,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "pallet-mobile-registry"
+version = "4.0.0-dev"
+dependencies = [
+ "frame-benchmarking",
+ "frame-support",
+ "frame-system",
+ "log",
+ "parity-scale-codec",
+ "scale-info",
+ "sp-core",
+ "sp-io",
+ "sp-runtime",
+ "sp-std",
+]
+
+[[package]]
 name = "pallet-ocw-circuits"
 version = "4.0.0-dev"
 dependencies = [
@@ -3989,11 +4006,14 @@ dependencies = [
  "frame-system",
  "log",
  "ocw-common",
+ "pallet-ocw-circuits",
  "pallet-tx-validation",
  "parity-scale-codec",
  "prost",
  "prost-build",
  "prost-types",
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
  "scale-info",
  "serde",
  "serde_json",
@@ -4123,6 +4143,7 @@ dependencies = [
  "frame-benchmarking",
  "frame-support",
  "frame-system",
+ "log",
  "parity-scale-codec",
  "scale-info",
  "sp-core",

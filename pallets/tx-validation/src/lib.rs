@@ -83,7 +83,26 @@ pub mod pallet {
     //     }
     // }
 
-    /// Store ipfs_hash -> CircuitServerMetadata; typically at least the OTP/digits/permutation
+    /// Easy way to make a link b/w a "message" and "pinpad" circuits
+    #[derive(
+        Clone,
+        Encode,
+        Decode,
+        Eq,
+        PartialEq,
+        RuntimeDebug,
+        Default,
+        scale_info::TypeInfo,
+        MaxEncodedLen,
+    )]
+    pub struct DisplayValidationPackage {
+        // usually only 2-4 digits for the message, and always 10 for the pinpad
+        // but we can take some margin
+        pub message_digits: BoundedVec<u8, ConstU32<10>>,
+        pub pinpad_digits: BoundedVec<u8, ConstU32<10>>,
+    }
+
+    /// Store account -> ipfs_hash -> CircuitServerMetadata; typically at least the OTP/digits/permutation
     /// This will be checked against user input to pass/fail the current tx
     // #[pallet::storage]
     // #[pallet::getter(fn circuit_server_metadata_map)]
@@ -91,15 +110,20 @@ pub mod pallet {
     //     StorageMap<_, Twox128, CircuitServerMetadataKey<T>, CircuitServerMetadata, ValueQuery>;
     #[pallet::storage]
     #[pallet::getter(fn circuit_server_metadata_map)]
-    pub(super) type CircuitServerMetadataMap<T: Config> = StorageMap<
+    pub(super) type CircuitServerMetadataMap<T: Config> = StorageDoubleMap<
         _,
         Twox128,
-        // key: (AccountId, IPFS hash)
+        T::AccountId,
+        Twox128,
         // 32 b/c IPFS hash is 256 bits = 32 bytes
         // But due to encoding(??) in practice it is 46 bytes(checked with debugger)
-        (T::AccountId, BoundedVec<u8, ConstU32<64>>),
-        (BoundedVec<u8, ConstU32<20>>,),
-        ValueQuery,
+        // TODO for now we reference the whole "DisplayStrippedCircuitsPackage" by just using the message_pgarbled_cid;
+        //      do we need to use the 4 field as the key?
+        BoundedVec<u8, ConstU32<64>>,
+        //  Struct containing both message_digits and pinpad_digits
+        DisplayValidationPackage,
+        // TODO?
+        // ValueQuery,
     >;
 
     #[pallet::pallet]
@@ -120,22 +144,29 @@ pub mod pallet {
         },
         /// DEBUG ONLY
         DEBUGNewDigitsSet {
-            circuit_digits: Vec<u8>,
+            message_digits: Vec<u8>,
+            pinpad_digits: Vec<u8>,
         },
     }
 
     // Errors inform users that something went wrong.
     #[pallet::error]
     pub enum Error<T> {
-        TxWrongInputGiven,
+        // wrong OTP/permutation given -> Transaction failed
+        TxWrongCodeGiven,
+        // inputs SHOULD be [0;9] or ['0';'9']
+        TxInvalidInputsGiven,
         /// Errors should have helpful documentation associated with them.
         StorageOverflow,
     }
 
+    /// for now we reference the whole "DisplayStrippedCircuitsPackage" by just using the message_pgarbled_cid
+    /// so we only pass "message_pgarbled_cid"
     pub fn store_metadata_aux<T: Config>(
         origin: OriginFor<T>,
-        ipfs_cid: Vec<u8>,
-        circuit_digits: Vec<u8>,
+        message_pgarbled_cid: Vec<u8>,
+        message_digits: Vec<u8>,
+        pinpad_digits: Vec<u8>,
     ) -> DispatchResult {
         // Check that the extrinsic was signed and get the signer.
         // This function will return an error if the extrinsic is not signed.
@@ -143,16 +174,20 @@ pub mod pallet {
         let who = ensure_signed(origin)?;
 
         crate::Pallet::<T>::deposit_event(Event::DEBUGNewDigitsSet {
-            circuit_digits: circuit_digits.clone(),
+            message_digits: message_digits.clone(),
+            pinpad_digits: pinpad_digits.clone(),
         });
 
         // Update storage.
         <CircuitServerMetadataMap<T>>::insert(
-            (
-                who,
-                TryInto::<BoundedVec<u8, ConstU32<64>>>::try_into(ipfs_cid).unwrap(),
-            ),
-            (TryInto::<BoundedVec<u8, ConstU32<20>>>::try_into(circuit_digits).unwrap(),),
+            who,
+            TryInto::<BoundedVec<u8, ConstU32<64>>>::try_into(message_pgarbled_cid).unwrap(),
+            DisplayValidationPackage {
+                message_digits: TryInto::<BoundedVec<u8, ConstU32<10>>>::try_into(message_digits)
+                    .unwrap(),
+                pinpad_digits: TryInto::<BoundedVec<u8, ConstU32<10>>>::try_into(pinpad_digits)
+                    .unwrap(),
+            },
         );
 
         Ok(())
@@ -164,13 +199,15 @@ pub mod pallet {
     #[pallet::call]
     impl<T: Config> Pallet<T> {
         // TODO remove call? how to properly handle calling store_metadata_aux from pallet-ocw-garble???
+        // NOTE: this is needed only for tests...
         #[pallet::weight(10_000 + T::DbWeight::get().writes(1))]
         pub fn store_metadata(
             origin: OriginFor<T>,
-            ipfs_cid: Vec<u8>,
-            circuit_digits: Vec<u8>,
+            message_pgarbled_cid: Vec<u8>,
+            message_digits: Vec<u8>,
+            pinpad_digits: Vec<u8>,
         ) -> DispatchResult {
-            store_metadata_aux::<T>(origin, ipfs_cid, circuit_digits)
+            store_metadata_aux::<T>(origin, message_pgarbled_cid, message_digits, pinpad_digits)
         }
 
         // NOTE: for now this extrinsic is called from the front-end so input_digits is ascii
@@ -187,28 +224,56 @@ pub mod pallet {
             let who = ensure_signed(origin)?;
 
             // Compare with storage
-            let circuit_server_metadata = <CircuitServerMetadataMap<T>>::get((
+            let display_validation_package = <CircuitServerMetadataMap<T>>::get(
                 who.clone(),
                 TryInto::<BoundedVec<u8, ConstU32<64>>>::try_into(ipfs_cid).unwrap(),
-            ));
+            )
+            .unwrap();
 
             // convert ascii to digits
             // first step: Vec<u8> to str; that way we can then use "to_digit"
+            // DO NOT convert if inputs are [0;9] only convert if they are ['0';'9']
+            // That way if works both using a front-end(usuful for testing/demo) and directly using API/cli(PROD, ie from Android)
+            // TODO test from Android
             let input_digits_str =
                 sp_std::str::from_utf8(&input_digits).expect("input_digits utf8");
             let input_digits_int: Vec<u8> = input_digits_str
                 .chars()
-                .map(|c| u8::try_from(c.to_digit(10u32).unwrap()).unwrap())
+                .map(|c| u8::try_from(c.to_digit(10u32).unwrap_or(c as u32)).unwrap())
                 .collect();
 
+            // use permutation(ie pinpad_digits)
+            let pinpad_permutation = display_validation_package.pinpad_digits;
+            log::info!(
+                "[tx-validation] check_input: input_digits_str = {:?}, input_digits_int = {:?}, pinpad_permutation = {:?}",
+                input_digits_str,
+                sp_std::str::from_utf8(&input_digits_int).expect("input_digits_int utf8"),
+                sp_std::str::from_utf8(&pinpad_permutation).expect("pinpad_permutation utf8"),
+            );
+
+            let computed_inputs_from_permutation: Vec<u8> = input_digits_int
+                .into_iter()
+                .map(|pinpad_index| {
+                    pinpad_permutation
+                        .get(pinpad_index as usize)
+                        .unwrap()
+                        .clone()
+                })
+                .collect();
+            log::info!(
+                "[tx-validation] check_input: computed_inputs_from_permutation = {:?}, message_digits = {:?}",
+                &computed_inputs_from_permutation,
+                &display_validation_package.message_digits
+            );
+
             // TODO remove the key from the map; we DO NOT want to allow retrying
-            if circuit_server_metadata.0 == input_digits_int {
+            if display_validation_package.message_digits == computed_inputs_from_permutation {
                 Self::deposit_event(Event::TxPass { account_id: who });
                 // TODO on success: call next step/callback (ie pallet-tx-XXX)
                 return Ok(());
             } else {
                 Self::deposit_event(Event::TxFail { account_id: who });
-                return Err(Error::<T>::TxWrongInputGiven)?;
+                return Err(Error::<T>::TxWrongCodeGiven)?;
             }
         }
     }
