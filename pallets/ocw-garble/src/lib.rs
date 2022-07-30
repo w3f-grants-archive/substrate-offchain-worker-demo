@@ -130,6 +130,7 @@ pub mod pallet {
         pub message_packmsg_cid: BoundedVec<u8, ConstU32<64>>,
         pub pinpad_pgarbled_cid: BoundedVec<u8, ConstU32<64>>,
         pub pinpad_packmsg_cid: BoundedVec<u8, ConstU32<64>>,
+        message_nb_digits: u32,
     }
 
     type PendingCircuitsType = BoundedVec<
@@ -431,6 +432,7 @@ pub mod pallet {
                         pinpad_packmsg_cid,
                     )
                     .unwrap(),
+                    message_nb_digits: message_digits.len().try_into().unwrap(),
                 })
                 .unwrap();
             <AccountToPendingCircuitsMap<T>>::insert(who, current_pending_circuits);
